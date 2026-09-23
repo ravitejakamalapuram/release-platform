@@ -17,9 +17,13 @@ on:
         type: string
         default: auto
       dry_run:
-        description: 'Validate, test, build and package, but do not upload, tag or release'
+        description: 'Validate, test, build, package and run the read-only store preflight, but do not upload, tag or release'
         type: boolean
         default: false
+      store_preflight:
+        description: 'In a dry run, query the stores read-only (in review? version high enough?). Only turn off for fixtures with fake store ids.'
+        type: boolean
+        default: true
       targets:
         description: 'Optional comma list of target types to release (chrome,android). Empty = all.'
         type: string
@@ -104,6 +108,7 @@ jobs:
       platform_sha: ${{ needs.resolve.outputs.platform_sha }}
       sha: ${{ steps.version.outputs.sha }}
       app: ${{ steps.config.outputs.app }}
+      e2e: ${{ steps.config.outputs.e2e_in_release == 'true' && steps.config.outputs.e2e || '' }}
       chrome: ${{ steps.config.outputs.chrome }}
       android: ${{ steps.config.outputs.android }}
       version: ${{ steps.version.outputs.version }}
@@ -222,6 +227,15 @@ jobs:
           BUILD_COMMAND: ${{ matrix.target.build }}
           VERSION_NAME: ${{ needs.plan.outputs.version }}
         run: bash -euo pipefail -c "$BUILD_COMMAND"
+
+      - name: E2E (e2e_in_release)
+        if: needs.plan.outputs.e2e != ''
+        working-directory: app/${{ inputs.directory }}
+        env:
+          E2E_COMMAND: ${{ needs.plan.outputs.e2e }}
+          EXT_PATH: ${{ matrix.target.path }}
+        run: |
+          EXTENSION_DIR="$(cd "$EXT_PATH" && pwd)" bash -euo pipefail -c "$E2E_COMMAND"
 
       - name: Package
         working-directory: app/${{ inputs.directory }}
@@ -433,6 +447,15 @@ jobs:
           access_token_scopes: https://www.googleapis.com/auth/chromewebstore
           create_credentials_file: false
 
+      - name: Store preflight (dry run, read-only)
+        id: preflight
+        if: ${{ inputs.dry_run && inputs.store_preflight }}
+        env:
+          GOOGLE_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          ITEM: ${{ matrix.target.item_id }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: node platform/scripts/cws.mjs preflight --item "$ITEM" --version "$VERSION"
+
       - name: Upload and submit for review
         id: publish
         if: ${{ !inputs.dry_run }}
@@ -450,15 +473,24 @@ jobs:
         if: always()
         env:
           KEY: ${{ matrix.target.key }}
-          OUTCOME: ${{ inputs.dry_run && 'dry-run' || steps.publish.outcome }}
-          RESULT: ${{ steps.publish.outputs.result }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          STORE_PREFLIGHT: ${{ inputs.store_preflight }}
+          PREFLIGHT: ${{ steps.preflight.outcome }}
+          PUBLISH: ${{ steps.publish.outcome }}
+          RESULT: ${{ steps.publish.outputs.result || steps.preflight.outputs.result }}
         run: |
           mkdir -p results
-          case "$OUTCOME" in
-            success) jq -n --arg k "$KEY" --arg r "$RESULT" '{key:$k, ok:true, result:$r}' ;;
-            dry-run) jq -n --arg k "$KEY" '{key:$k, ok:true, result:"dry run (packaged, not uploaded)"}' ;;
-            *) jq -n --arg k "$KEY" --arg o "$OUTCOME" '{key:$k, ok:false, result:("FAILED (" + $o + ") - see job log")}' ;;
-          esac > "results/$KEY.json"
+          if [ "$DRY_RUN" = "true" ]; then outcome="$PREFLIGHT"; else outcome="$PUBLISH"; fi
+          if [ "$DRY_RUN" = "true" ] && [ "$STORE_PREFLIGHT" != "true" ] && [ "$outcome" = "skipped" ]; then
+            RESULT="dry run (store preflight skipped)"; outcome=success
+          elif [ "$DRY_RUN" = "true" ] && [ "$outcome" = "success" ]; then
+            RESULT="dry run: ${RESULT}"
+          fi
+          if [ "$outcome" = "success" ]; then
+            jq -n --arg k "$KEY" --arg r "$RESULT" '{key:$k, ok:true, result:$r}'
+          else
+            jq -n --arg k "$KEY" --arg o "${outcome:-not run}" '{key:$k, ok:false, result:("FAILED (" + $o + ") - see job log")}'
+          fi > "results/$KEY.json"
 
       - uses: actions/upload-artifact@v7
         if: always()
@@ -508,6 +540,15 @@ jobs:
           access_token_scopes: https://www.googleapis.com/auth/androidpublisher
           create_credentials_file: false
 
+      - name: Store preflight (dry run, read-only)
+        id: preflight
+        if: ${{ inputs.dry_run && inputs.store_preflight }}
+        env:
+          GOOGLE_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          PACKAGE: ${{ matrix.target.package }}
+          VERSION_CODE: ${{ needs.plan.outputs.version_code }}
+        run: node platform/scripts/play.mjs preflight --package "$PACKAGE" --version-code "$VERSION_CODE"
+
       - name: Upload to Play
         id: publish
         if: ${{ !inputs.dry_run }}
@@ -527,15 +568,24 @@ jobs:
         if: always()
         env:
           KEY: ${{ matrix.target.key }}
-          OUTCOME: ${{ inputs.dry_run && 'dry-run' || steps.publish.outcome }}
-          RESULT: ${{ steps.publish.outputs.result }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          STORE_PREFLIGHT: ${{ inputs.store_preflight }}
+          PREFLIGHT: ${{ steps.preflight.outcome }}
+          PUBLISH: ${{ steps.publish.outcome }}
+          RESULT: ${{ steps.publish.outputs.result || steps.preflight.outputs.result }}
         run: |
           mkdir -p results
-          case "$OUTCOME" in
-            success) jq -n --arg k "$KEY" --arg r "$RESULT" '{key:$k, ok:true, result:$r}' ;;
-            dry-run) jq -n --arg k "$KEY" '{key:$k, ok:true, result:"dry run (built, not uploaded)"}' ;;
-            *) jq -n --arg k "$KEY" --arg o "$OUTCOME" '{key:$k, ok:false, result:("FAILED (" + $o + ") - see job log")}' ;;
-          esac > "results/$KEY.json"
+          if [ "$DRY_RUN" = "true" ]; then outcome="$PREFLIGHT"; else outcome="$PUBLISH"; fi
+          if [ "$DRY_RUN" = "true" ] && [ "$STORE_PREFLIGHT" != "true" ] && [ "$outcome" = "skipped" ]; then
+            RESULT="dry run (store preflight skipped)"; outcome=success
+          elif [ "$DRY_RUN" = "true" ] && [ "$outcome" = "success" ]; then
+            RESULT="dry run: ${RESULT}"
+          fi
+          if [ "$outcome" = "success" ]; then
+            jq -n --arg k "$KEY" --arg r "$RESULT" '{key:$k, ok:true, result:$r}'
+          else
+            jq -n --arg k "$KEY" --arg o "${outcome:-not run}" '{key:$k, ok:false, result:("FAILED (" + $o + ") - see job log")}'
+          fi > "results/$KEY.json"
 
       - uses: actions/upload-artifact@v7
         if: always()

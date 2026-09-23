@@ -1,0 +1,44 @@
+# When a release tag vX.Y.Z is pushed, point the moving major tag vX at it, so callers pinned to
+# @vX pick it up. Only moves forward: a hotfix tag on an older line never drags vX backwards.
+name: move-major-tag
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions: {}
+
+concurrency:
+  group: move-major-tag
+  cancel-in-progress: false
+
+jobs:
+  move:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Move major tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if ! [[ "$TAG" =~ ^v([0-9]+)\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::notice::$TAG is not a vX.Y.Z release tag; nothing to do."
+            exit 0
+          fi
+          major="v${BASH_REMATCH[1]}"
+          latest=$(git tag --list "${major}.*.*" | grep -E "^${major}\.[0-9]+\.[0-9]+$" | sort -V | tail -n1)
+          if [ "$latest" != "$TAG" ]; then
+            echo "::notice::$TAG is not the newest ${major}.x.y tag ($latest is); leaving $major alone."
+            exit 0
+          fi
+          sha=$(git rev-parse "$TAG^{commit}")
+          git tag -f "$major" "$sha"
+          git push -f origin "refs/tags/$major"
+          echo "Moved $major -> $TAG ($sha)" | tee -a "$GITHUB_STEP_SUMMARY"

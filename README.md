@@ -77,9 +77,9 @@ is executing. So the platform keeps one invariant:
 | --- | --- | --- | --- |
 | release · `resolve` (🔑 above) | no — no app checkout; only reads its own OIDC claims to find the release-platform commit | yes | none |
 | release · `plan` | yes (test gate) | **no** | none |
-| release · `build-chrome` | yes (build) | **no** | none |
+| release · `build-chrome` | yes (build, `e2e` if `e2e_in_release`) | **no** | none |
 | release · `build-android` | yes (Gradle/Flutter) | **no** | Android upload key only |
-| release · `publish-*` (🔑) | no — release-platform scripts on downloaded zip/AAB artifacts only | yes | none |
+| release · `publish-*` (🔑) | no — release-platform scripts on downloaded zip/AAB artifacts only (dry run: read-only preflight) | yes | none |
 | release · `release` | no | no (`contents: write`) | none |
 | promote · `config` | no (reads `release.yaml` as data with `yq`) | no | none |
 | promote · `play` | no — never checks out the caller repo | yes | none |
@@ -219,7 +219,7 @@ Per app repo:
    ahead of your tags (for example a Play track with a larger versionCode), tag the current
    store version on `main` first. The preflight checks fail with the exact number otherwise.
 5. **Dry run.** Run the release workflow with `dry_run: true`; it validates, tests, builds,
-   packages and authenticates without uploading.
+   packages, authenticates and runs the read-only store preflight without uploading.
 6. **Delete the old credentials** once the first real release succeeds: `CHROME_CLIENT_ID`,
    `CHROME_CLIENT_SECRET`, `CHROME_REFRESH_TOKEN` (any `chrome-*` OAuth secrets), Play
    service-account JSON (`PLAY_SERVICE_ACCOUNT_KEY` / `PLAY_STORE_CREDENTIALS`) and any `PAT_TOKEN`
@@ -236,7 +236,11 @@ only after every store accepted the release, and PR checks build exactly what a 
 2. run the `test` command,
 3. per target: *chrome* — run `build`, package the zip with the same allow/denylist and
    manifest-reference check as a release (the zip is kept as a 7-day artifact); *android* — run
-   `./gradlew <ci_task>` (default `assembleDebug`, unsigned/debug) or your `ci_build` command.
+   `./gradlew <ci_task>` (default `assembleDebug`, unsigned/debug) or your `ci_build` command,
+4. the optional `e2e` command after each chrome build, with `EXTENSION_DIR` set to the absolute
+   path of the built extension (apps without a chrome target run it right after `test`). Setting
+   up browsers / Python / Playwright is the command's own job, e.g.
+   `e2e: npm ci && npx playwright install --with-deps chromium && npx playwright test`.
 
 ## Releasing
 
@@ -245,15 +249,25 @@ Run the app repo's **release** workflow (Actions → release → Run workflow):
 | Input | Meaning |
 | --- | --- |
 | `bump` | `auto` (default), `patch`, `minor`, `major` |
-| `dry_run` | Validate, test, build, package and authenticate — but no upload, tag or release |
+| `dry_run` | Validate, test, build, package, authenticate and run the **read-only store preflight** — but no upload, tag or release |
 | `targets` | Only these target types, e.g. `chrome` (empty = all) |
 
 **Versioning.** The next version comes from the highest strict `vX.Y.Z` tag. With `auto`, the
 [conventional commits](https://www.conventionalcommits.org) since that tag decide: `feat` → minor,
 `!` or `BREAKING CHANGE:` → major, anything else → patch (`auto` refuses to release when there
-are no new commits). With no tag yet, the version in the first target's `manifest.json` /
-`package.json` / `build.gradle(.kts)` / `pubspec.yaml` is the baseline. The Play `versionCode` is
+are no new commits). With no tag yet, a baseline is read from the repo and the log says which
+file it came from: `version_file` if set; otherwise, for a chrome first target, the source
+`manifest.json` — `path` itself, then next to a build-output `path` (`apps/extension/dist` →
+`apps/extension/`, its `public/`, `src/`, `static/`), then `manifest.json`/`public/`/`src/` at the
+root, then `apps/*/…` — then the nearest `package.json`; for android, `build.gradle(.kts)` or
+`pubspec.yaml`. Non-JSON files such as `manifest.config.ts` are skipped. The Play `versionCode` is
 `MAJOR*1_000_000 + MINOR*1_000 + PATCH` (MINOR and PATCH must stay ≤ 999).
+
+**Dry-run store preflight.** Publish jobs in a dry run stop after the same read-only checks a
+real release starts with: Chrome `fetchStatus` (fails if the item is in review or the store
+already has an equal/higher version) and Play track listing (fails if any track has an
+equal/higher versionCode; the edit is deleted, never committed). `store_preflight: false` skips
+them — only meant for fixtures with fake store ids.
 
 **Per target.**
 
@@ -299,7 +313,10 @@ failing the run.
 
 ## release.yaml reference
 
-Top level: `app` (slug, required), `test` (optional command), `targets` (≥ 1). Full schema:
+Top level: `app` (slug, required), `test` (optional command), `e2e` (optional command, see
+[PR checks](#pr-checks)), `e2e_in_release` (default `false`; also run `e2e` in the release's chrome
+build job, before packaging), `version_file` (optional baseline source for untagged repos),
+`targets` (≥ 1). Full schema:
 [`schema/release.schema.json`](schema/release.schema.json).
 
 **chrome**
@@ -400,7 +417,7 @@ yq -o=json . examples/chrome-only.release.yaml > /tmp/r.json && node scripts/val
 Layout:
 
 ```
-.github/workflows/  release.yml promote.yml status.yml app-ci.yml (reusable) · dashboard.yml ci.yml (this repo)
+.github/workflows/  release.yml promote.yml status.yml app-ci.yml (reusable) · dashboard.yml ci.yml move-major-tag.yml (this repo)
 scripts/            cws.mjs play.mjs version.mjs validate.mjs package-chrome.mjs changelog.mjs status.mjs summary.mjs
 scripts/lib/        http.mjs (Google API client) gha.mjs (runner helpers) schema.mjs (tiny JSON Schema validator)
 schema/             release.schema.json
@@ -415,5 +432,6 @@ with the runner's preinstalled `yq`. Every API call takes an injectable `fetch`,
 cover request construction and error handling without network access.
 
 **Releasing the platform itself.** Consumers pin the moving major tag `@v2`. After merging to
-`main`: `git tag v2.X.Y && git tag -f v2 && git push origin v2.X.Y && git push -f origin v2`.
-Breaking changes to inputs or `release.yaml` go to `v3`.
+`main`, push a release tag (`git tag v2.X.Y && git push origin v2.X.Y`);
+[`move-major-tag.yml`](.github/workflows/move-major-tag.yml) then force-moves `v2` to it (only
+if it is the newest `v2.x.y`). Breaking changes to inputs or `release.yaml` go to `v3`.

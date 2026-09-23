@@ -1,6 +1,9 @@
-# Fixture used by ci.yml's e2e dry run. The item id is fake; dry runs never call the store.
+# Fixture used by ci.yml (app-ci + release dry run). The item id is fake, so the release dry run
+# is called with store_preflight: false.
 app: fixture
 test: test -f extension/manifest.json
+e2e: test -f "$EXTENSION_DIR/manifest.json" && test -f "$EXTENSION_DIR/generated/build.txt" && echo "e2e OK against $EXTENSION_DIR"
+e2e_in_release: true
 targets:
   - type: chrome
     item_id: aaaabbbbccccddddeeeeffffgggghhhh

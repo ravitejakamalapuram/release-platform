@@ -21,6 +21,19 @@
       "minLength": 1,
       "description": "Shell command run in the repo root before anything is built, uploaded or tagged. Non-zero exit aborts the release."
     },
+    "e2e": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Optional end-to-end command. app-ci.yml runs it after each chrome build with EXTENSION_DIR set to the built extension directory. Tool setup (Playwright, Python, ...) is the command's job."
+    },
+    "e2e_in_release": {
+      "type": "boolean",
+      "description": "Also run `e2e` in the release pipeline (after the chrome build, before packaging). Default false."
+    },
+    "version_file": {
+      "$ref": "#/$defs/relativePath",
+      "description": "File holding the current version (JSON with a top-level \"version\", build.gradle(.kts), pubspec.yaml, or a `version = x.y.z` line). Only used when the repo has no vX.Y.Z tag yet."
+    },
     "targets": {
       "type": "array",
       "minItems": 1,

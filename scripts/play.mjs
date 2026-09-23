@@ -8,6 +8,7 @@
 //   GOOGLE_ACCESS_TOKEN=... node scripts/play.mjs halt     --package com.x --track production
 //   GOOGLE_ACCESS_TOKEN=... node scripts/play.mjs complete --package com.x --track production
 //   GOOGLE_ACCESS_TOKEN=... node scripts/play.mjs tracks   --package com.x
+//   GOOGLE_ACCESS_TOKEN=... node scripts/play.mjs preflight --package com.x --version-code 1002003   (read-only)
 import { readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
@@ -130,17 +131,29 @@ export function maxVersionCode(tracks) {
   return best;
 }
 
+/** Throw unless versionCode is higher than every code already on any track. */
+export function checkVersionCode(tracks, versionCode, pkg) {
+  const highest = maxVersionCode(tracks);
+  if (Number(versionCode) <= highest.code) {
+    throw new StoreError(
+      `versionCode ${versionCode} is not higher than ${highest.code} already on the "${highest.track}" track of ${pkg}. ` +
+        'Create a v* tag at or above that version (versionCode = MAJOR*1000000 + MINOR*1000 + PATCH) or pass a bigger bump, then re-run.',
+    );
+  }
+  return highest;
+}
+
+/** Read-only check used by dry runs: the same versionCode rule uploadBundle enforces. */
+export async function preflight({ pkg, token, fetchImpl, versionCode }) {
+  const tracks = await listTracks({ pkg, token, fetchImpl });
+  return { highest: checkVersionCode(tracks, versionCode, pkg), tracks };
+}
+
 export async function uploadBundle({ pkg, token, fetchImpl, aab, track, versionName, versionCode, status = 'completed', notes }) {
   return withEdit({ pkg, token, fetchImpl }, async (id) => {
     if (versionCode !== undefined) {
       const { tracks = [] } = await request({ method: 'GET', url: urls.tracks(pkg, id), token, fetchImpl });
-      const highest = maxVersionCode(tracks);
-      if (Number(versionCode) <= highest.code) {
-        throw new StoreError(
-          `versionCode ${versionCode} is not higher than ${highest.code} already on the "${highest.track}" track of ${pkg}. ` +
-            'Create a v* tag at or above that version (versionCode = MAJOR*1000000 + MINOR*1000 + PATCH) or pass a bigger bump, then re-run.',
-        );
-      }
+      checkVersionCode(tracks, versionCode, pkg);
     }
     const bundle = await request({ method: 'POST', url: urls.bundles(pkg, id), token, body: aab, contentType: 'application/octet-stream', fetchImpl });
     if (versionCode !== undefined && Number(bundle.versionCode) !== Number(versionCode)) {
@@ -269,13 +282,19 @@ async function cli() {
       out = `${reportCommit(commit)}: ${pkg} ${result.name} on ${result.track} [${result.status}${result.userFraction ? ` ${result.userFraction * 100}%` : ''}]`;
       break;
     }
+    case 'preflight': {
+      if (!values['version-code']) throw new Error('--version-code is required');
+      const { highest } = await preflight({ pkg, token, versionCode: values['version-code'] });
+      out = `PREFLIGHT_OK: versionCode ${values['version-code']} > ${highest.code}${highest.track ? ` (highest, on ${highest.track})` : ' (no releases yet)'}`;
+      break;
+    }
     case 'tracks': {
       const lines = describeTracks(await listTracks({ pkg, token }));
       out = lines.length ? lines.join('\n') : '(no releases on any track)';
       break;
     }
     default:
-      throw new Error(`Unknown command "${command}" (expected upload|promote|rollout|halt|complete|tracks)`);
+      throw new Error(`Unknown command "${command}" (expected upload|preflight|promote|rollout|halt|complete|tracks)`);
   }
   log(out);
   setOutput('result', out.split('\n')[0]);
