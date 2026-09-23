@@ -31,6 +31,8 @@ defaults:
     shell: bash
 
 jobs:
+  # Holds id-token. Safe because it never checks out or runs code from the calling repo: it only
+  # runs release-platform scripts against apps.yaml from release-platform itself.
   status:
     name: Store status
     runs-on: ubuntu-latest

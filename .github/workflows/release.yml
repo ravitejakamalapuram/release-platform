@@ -56,22 +56,18 @@ defaults:
     shell: bash
 
 jobs:
-  plan:
-    name: Plan
+  # SECURITY INVARIANT: no job that runs app-controlled code (checkout + test/build/npm/gradle)
+  # may hold id-token: write. With a token, app code could mint store credentials, because
+  # job_workflow_ref here is release-platform. This job therefore touches no app code at all:
+  # it only reads its own OIDC claims to learn which release-platform commit is running.
+  resolve:
+    name: Resolve platform
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 5
     permissions:
-      contents: read
       id-token: write
     outputs:
       platform_sha: ${{ steps.platform.outputs.sha }}
-      sha: ${{ steps.version.outputs.sha }}
-      app: ${{ steps.config.outputs.app }}
-      chrome: ${{ steps.config.outputs.chrome }}
-      android: ${{ steps.config.outputs.android }}
-      version: ${{ steps.version.outputs.version }}
-      version_code: ${{ steps.version.outputs.version_code }}
-      tag: ${{ steps.version.outputs.tag }}
     steps:
       - name: Resolve release-platform ref
         id: platform
@@ -96,11 +92,29 @@ jobs:
           echo "Platform workflow: $(jq -r .job_workflow_ref <<<"$claims")"
           echo "sha=$(jq -r .job_workflow_sha <<<"$claims")" >> "$GITHUB_OUTPUT"
 
+  # Runs app code (test gate) -> contents: read only, no id-token.
+  plan:
+    name: Plan
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      platform_sha: ${{ needs.resolve.outputs.platform_sha }}
+      sha: ${{ steps.version.outputs.sha }}
+      app: ${{ steps.config.outputs.app }}
+      chrome: ${{ steps.config.outputs.chrome }}
+      android: ${{ steps.config.outputs.android }}
+      version: ${{ steps.version.outputs.version }}
+      version_code: ${{ steps.version.outputs.version_code }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
       - name: Checkout release-platform
         uses: actions/checkout@v7
         with:
           repository: ravitejakamalapuram/release-platform
-          ref: ${{ steps.platform.outputs.sha }}
+          ref: ${{ needs.resolve.outputs.platform_sha }}
           path: platform
           persist-credentials: false
 
@@ -169,6 +183,7 @@ jobs:
           path: ${{ runner.temp }}/notes.md
           if-no-files-found: error
 
+  # Runs app code -> no id-token, no secrets.
   build-chrome:
     name: Build chrome (${{ matrix.target.item_id }})
     needs: plan
@@ -223,6 +238,7 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+  # Runs app code -> no id-token. Only the upload-key secrets are exposed here.
   build-android:
     name: Build android (${{ matrix.target.package }})
     needs: plan
@@ -372,6 +388,8 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+  # Holds id-token: runs ONLY release-platform scripts on downloaded artifacts. Never check out
+  # or execute app code here (no npm ci, no gradle, no build/test commands).
   publish-chrome:
     name: Publish chrome (${{ matrix.target.item_id }})
     needs: [plan, build-chrome, build-android]
@@ -448,6 +466,7 @@ jobs:
           name: result-${{ matrix.target.key }}
           path: results/
 
+  # Holds id-token: platform scripts + downloaded artifacts only (see publish-chrome).
   publish-android:
     name: Publish android (${{ matrix.target.package }})
     needs: [plan, build-chrome, build-android]

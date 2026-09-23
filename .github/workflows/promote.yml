@@ -53,14 +53,17 @@ defaults:
     shell: bash
 
 jobs:
-  play:
-    name: ${{ inputs.action }} (${{ inputs.to_track }})
+  # Reads the caller's release.yaml (data only; no app code runs anywhere in this workflow).
+  # Kept in its own job without id-token so the job that can mint store tokens never checks out
+  # caller content at all.
+  config:
+    name: Resolve package
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    environment: ${{ inputs.environment }}
+    timeout-minutes: 5
     permissions:
       contents: read
-      id-token: write
+    outputs:
+      package: ${{ steps.pkg.outputs.package }}
     steps:
       - name: Check inputs
         env:
@@ -70,6 +73,38 @@ jobs:
             echo "::error::Unknown action '$ACTION' (expected promote, rollout, halt or complete)"; exit 1 ;;
           esac
 
+      - name: Checkout release.yaml
+        if: inputs.package == ''
+        uses: actions/checkout@v7
+        with:
+          sparse-checkout: release.yaml
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Resolve package
+        id: pkg
+        env:
+          PACKAGE: ${{ inputs.package }}
+        run: |
+          if [ -z "$PACKAGE" ]; then
+            PACKAGE=$(yq '[.targets[] | select(.type == "android")][0].package // ""' release.yaml)
+          fi
+          if ! [[ "$PACKAGE" =~ ^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$ ]]; then
+            echo "::error::No valid package: pass the package input or add an android target to release.yaml (got '$PACKAGE')"; exit 1
+          fi
+          echo "package=$PACKAGE" >> "$GITHUB_OUTPUT"
+
+  # Holds id-token: runs only release-platform scripts; never checks out the caller repo.
+  play:
+    name: ${{ inputs.action }} (${{ inputs.to_track }})
+    needs: config
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
       - name: Resolve release-platform ref
         id: platform
         env:
@@ -93,28 +128,6 @@ jobs:
           path: platform
           persist-credentials: false
 
-      - name: Checkout release.yaml
-        if: inputs.package == ''
-        uses: actions/checkout@v7
-        with:
-          path: app
-          sparse-checkout: release.yaml
-          sparse-checkout-cone-mode: false
-          persist-credentials: false
-
-      - name: Resolve package
-        id: pkg
-        env:
-          PACKAGE: ${{ inputs.package }}
-        run: |
-          if [ -z "$PACKAGE" ]; then
-            PACKAGE=$(yq '[.targets[] | select(.type == "android")][0].package // ""' app/release.yaml)
-          fi
-          if [ -z "$PACKAGE" ]; then
-            echo "::error::No package input and no android target in release.yaml"; exit 1
-          fi
-          echo "package=$PACKAGE" >> "$GITHUB_OUTPUT"
-
       - uses: actions/setup-node@v7
         with:
           package-manager-cache: false
@@ -135,7 +148,7 @@ jobs:
         env:
           GOOGLE_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
           ACTION: ${{ inputs.action }}
-          PACKAGE: ${{ steps.pkg.outputs.package }}
+          PACKAGE: ${{ needs.config.outputs.package }}
           FROM: ${{ inputs.from_track }}
           TO: ${{ inputs.to_track }}
           FRACTION: ${{ inputs.user_fraction }}
@@ -149,7 +162,7 @@ jobs:
         if: always()
         env:
           ACTION: ${{ inputs.action }}
-          PACKAGE: ${{ steps.pkg.outputs.package }}
+          PACKAGE: ${{ needs.config.outputs.package }}
           RESULT: ${{ steps.play.outputs.result }}
           OUTCOME: ${{ steps.play.outcome }}
         run: |
