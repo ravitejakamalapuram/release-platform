@@ -65,6 +65,16 @@ jobs:
             console.log(r.apps.length + ' apps OK');
           " "$RUNNER_TEMP/apps.json"
 
+  # The reusable PR-check workflow, run against the fixture exactly as an app repo would.
+  app-ci:
+    needs: [test]
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/app-ci.yml
+    with:
+      directory: tests/fixtures/chrome-app
+
   # End-to-end dry run of the real reusable workflow against a fixture extension. Exercises
   # validation, versioning, build, packaging and the keyless Google auth (no store writes).
   e2e-dry-run:

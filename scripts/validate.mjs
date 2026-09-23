@@ -59,6 +59,8 @@ export function normalizeTarget(target, index) {
     package: target.package,
     gradle_task: target.gradle_task ?? 'bundleRelease',
     build: target.build ?? '',
+    ci_task: target.ci_task ?? 'assembleDebug',
+    ci_build: target.ci_build ?? '',
     flutter: target.flutter ?? '',
     aab: target.aab ?? 'app/build/outputs/bundle/release/app-release.aab',
     java: target.java ?? '17',

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Package a built Chrome extension directory into a store-ready zip.
 //
-//   node scripts/package-chrome.mjs --dir extension --version 1.4.0 --out dist/app.zip [--include '["a","b/**"]']
+//   node scripts/package-chrome.mjs --dir extension [--version 1.4.0] --out dist/app.zip [--include '["a","b/**"]']
 //
 // - Stamps manifest.json "version" (the working tree is never modified; files are staged).
 // - Default: everything under --dir minus common junk (see DEFAULT_EXCLUDES).
@@ -127,7 +127,9 @@ export function packageExtension({ dir, version, out, include = [] }) {
       mkdirSync(dirname(join(stage, f)), { recursive: true });
       cpSync(join(root, f), join(stage, f));
     }
-    writeFileSync(join(stage, 'manifest.json'), `${JSON.stringify(stampManifest(manifest, version), null, 2)}\n`);
+    // No version = keep the manifest's own (PR checks); the release pipeline always stamps.
+    const final = version ? stampManifest(manifest, version) : manifest;
+    writeFileSync(join(stage, 'manifest.json'), `${JSON.stringify(final, null, 2)}\n`);
     const target = resolve(out);
     mkdirSync(dirname(target), { recursive: true });
     rmSync(target, { force: true });
@@ -148,7 +150,7 @@ async function cli() {
       include: { type: 'string', default: '[]' },
     },
   });
-  for (const k of ['dir', 'version', 'out']) if (!values[k]) throw new Error(`--${k} is required`);
+  for (const k of ['dir', 'out']) if (!values[k]) throw new Error(`--${k} is required`);
   const include = JSON.parse(values.include);
   const result = packageExtension({ dir: values.dir, version: values.version, out: values.out, include });
   const size = statSync(result.out).size;

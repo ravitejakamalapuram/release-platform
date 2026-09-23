@@ -91,6 +91,10 @@ test('packageExtension writes a stamped zip without touching the source', { skip
   assert.doesNotMatch(listing, /README/);
   const stamped = JSON.parse(execFileSync('unzip', ['-p', out, 'manifest.json'], { encoding: 'utf8' }));
   assert.equal(stamped.version, '2.3.4');
+
+  const unstamped = `${out}.ci.zip`;
+  packageExtension({ dir, out: unstamped });
+  assert.equal(JSON.parse(execFileSync('unzip', ['-p', unstamped, 'manifest.json'], { encoding: 'utf8' })).version, '0.0.1');
 });
 
 function hasZip() {

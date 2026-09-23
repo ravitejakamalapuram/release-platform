@@ -10,5 +10,6 @@ targets:
     java: '17'
     build: flutter build appbundle --release --build-name "$VERSION_NAME" --build-number "$VERSION_CODE"
     aab: build/app/outputs/bundle/release/app-release.aab
+    ci_build: flutter build apk --debug      # PR checks (app-ci.yml) have no signing secrets
     track: internal
     release_notes: CHANGELOG.md

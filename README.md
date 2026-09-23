@@ -8,9 +8,9 @@ authenticate with GitHub OIDC → Google Cloud Workload Identity Federation → 
 that is the Chrome Web Store publisher and a Play Console user. The only secrets are Android
 upload keys, and they stay in each app repo.
 
-- [How it works](#how-it-works)
-- [Onboarding a new app](#onboarding)
-- [Releasing](#releasing) · [Promoting (Play)](#promoting-google-play) · [Dashboard](#dashboard)
+- [How it works](#how-it-works) · [Security model](#security-model)
+- [Onboarding a new app](#onboarding) · [Migrating from .github-workflows-shared](#migrating-from-github-workflows-shared)
+- [PR checks](#pr-checks) · [Releasing](#releasing) · [Promoting (Play)](#promoting-google-play) · [Dashboard](#dashboard)
 - [release.yaml reference](#releaseyaml-reference)
 - [Troubleshooting](#troubleshooting)
 - [One-time setup (already done)](#one-time-setup-already-done)
@@ -26,11 +26,12 @@ flowchart LR
   end
 
   subgraph rp["release-platform (this repo)"]
+    resolve["resolve 🔑<br/>own commit from OIDC claims"]
     plan["plan<br/>validate · test · next version"]
     build["build-*<br/>chrome zip · signed AAB"]
-    publish["publish-*<br/>upload · submit"]
+    publish["publish-* 🔑<br/>upload · submit"]
     tag["release<br/>tag vX.Y.Z + GitHub Release"]
-    plan --> build --> publish --> tag
+    resolve --> plan --> build --> publish --> tag
   end
 
   subgraph gcp["Google Cloud: rk-release-platform"]
@@ -61,6 +62,34 @@ flowchart LR
 Because of rule 2, store calls **must** run inside this repo's reusable workflows; a step in an
 app repo cannot mint store tokens even though it is owned by the same account. There is nothing
 to leak, rotate or expire.
+
+### Security model
+
+Rule 2 also means **any code running in a job of these workflows that holds `id-token: write`
+can mint store tokens** — the OIDC token names release-platform as the workflow, whoever's code
+is executing. So the platform keeps one invariant:
+
+> **No job that executes app-controlled code has `id-token: write`.**
+> App-controlled code = anything from the caller repo: `test`, `build`, `npm ci`, Gradle, Flutter,
+> postinstall scripts, Gradle plugins, and so on.
+
+| Workflow · job | Runs app code? | `id-token` | Secrets |
+| --- | --- | --- | --- |
+| release · `resolve` (🔑 above) | no — no app checkout; only reads its own OIDC claims to find the release-platform commit | yes | none |
+| release · `plan` | yes (test gate) | **no** | none |
+| release · `build-chrome` | yes (build) | **no** | none |
+| release · `build-android` | yes (Gradle/Flutter) | **no** | Android upload key only |
+| release · `publish-*` (🔑) | no — release-platform scripts on downloaded zip/AAB artifacts only | yes | none |
+| release · `release` | no | no (`contents: write`) | none |
+| promote · `config` | no (reads `release.yaml` as data with `yq`) | no | none |
+| promote · `play` | no — never checks out the caller repo | yes | none |
+| status · `status` | no — reads `apps.yaml` from release-platform only | yes | none |
+| app-ci · all jobs | yes | **no** | **none** |
+
+Jobs run on fresh hosted VMs, so a build job cannot tamper with a later publish job except
+through its artifacts, which publish jobs only upload to the store and never execute. Values from
+`release.yaml` reach scripts through environment variables, never through `${{ }}` interpolation
+into shell. When changing a workflow here, keep the table true.
 
 ### Pipeline guarantees
 
@@ -95,16 +124,31 @@ targets:
     path: extension
 ```
 
-**2. Add the caller workflow.** Copy [`templates/release-caller.yml`](templates/release-caller.yml)
-to `.github/workflows/release.yml`. The important bits:
+**2. Add the two caller workflows.**
 
-```yaml
-permissions:
-  contents: write   # tag + GitHub Release
-  id-token: write   # keyless Google auth
-uses: ravitejakamalapuram/release-platform/.github/workflows/release.yml@v2
-secrets: inherit    # Android upload key only
-```
+- [`templates/ci-caller.yml`](templates/ci-caller.yml) → `.github/workflows/ci.yml` (PR checks):
+
+  ```yaml
+  on: { pull_request: {}, push: { branches: [main] } }
+  jobs:
+    ci:
+      permissions: { contents: read, actions: read }
+      uses: ravitejakamalapuram/release-platform/.github/workflows/app-ci.yml@v2
+      # no secrets, no id-token
+  ```
+
+- [`templates/release-caller.yml`](templates/release-caller.yml) → `.github/workflows/release.yml`
+  (manual `workflow_dispatch`):
+
+  ```yaml
+  jobs:
+    release:
+      permissions:
+        contents: write   # tag + GitHub Release
+        id-token: write   # keyless Google auth
+      uses: ravitejakamalapuram/release-platform/.github/workflows/release.yml@v2
+      secrets: inherit    # Android upload key only
+  ```
 
 For Android promotion also copy [`templates/promote-caller.yml`](templates/promote-caller.yml)
 and create a `production` environment (Settings → Environments) with required reviewers.
@@ -155,6 +199,44 @@ Flutter apps use a custom `build:` command instead; `VERSION_NAME` and `VERSION_
 (`flutter build appbundle --build-name "$VERSION_NAME" --build-number "$VERSION_CODE"`).
 
 Finally, add the app to [`apps.yaml`](apps.yaml) so it shows on the dashboard.
+
+## Migrating from .github-workflows-shared
+
+Per app repo:
+
+1. **Add `release.yaml`** (above). Take `item_id` / `package` from the old workflow inputs or
+   `chrome-extension-id` secret; set `path` to the directory the old packaging step zipped.
+2. **Replace the workflows.** Delete every workflow that `uses: ravitejakamalapuram/.github-workflows-shared/...`
+   (`chrome-extension-ci/cd/publish/status`, `android-ci/cd`, `flutter-ci/cd`, `detect-changes`,
+   `validate-repo`, …) and add `ci.yml` + `release.yml` from the templates (plus `promote.yml` for
+   Play apps).
+3. **Android signing secrets.** Keep the keystore secrets you already have and map their names in
+   `signing:` (e.g. TelePort's `RELEASE_*`), or rename them to the `ANDROID_*` defaults. Add the
+   Gradle version snippet if the app doesn't read `-PversionCode` / `-PversionName` yet. Flutter
+   apps: set `build:` and `ci_build:` (see the [example](examples/android-only.release.yaml)).
+4. **Align versions with the stores.** The next version comes from the latest `vX.Y.Z` tag, and
+   both stores reject versions that are not higher than what they already have. If a store is
+   ahead of your tags (for example a Play track with a larger versionCode), tag the current
+   store version on `main` first. The preflight checks fail with the exact number otherwise.
+5. **Dry run.** Run the release workflow with `dry_run: true`; it validates, tests, builds,
+   packages and authenticates without uploading.
+6. **Delete the old credentials** once the first real release succeeds: `CHROME_CLIENT_ID`,
+   `CHROME_CLIENT_SECRET`, `CHROME_REFRESH_TOKEN` (any `chrome-*` OAuth secrets), Play
+   service-account JSON (`PLAY_SERVICE_ACCOUNT_KEY` / `PLAY_STORE_CREDENTIALS`) and any `PAT_TOKEN`
+   that only served the old pipelines. Nothing replaces them: auth is keyless now.
+
+What changes in behavior: releases are manual (`workflow_dispatch`) by default, tags are created
+only after every store accepted the release, and PR checks build exactly what a release would.
+
+## PR checks
+
+`app-ci.yml` runs on pull requests and pushes to `main` with **no secrets and no `id-token`**:
+
+1. validate `release.yaml` against the schema,
+2. run the `test` command,
+3. per target: *chrome* — run `build`, package the zip with the same allow/denylist and
+   manifest-reference check as a release (the zip is kept as a 7-day artifact); *android* — run
+   `./gradlew <ci_task>` (default `assembleDebug`, unsigned/debug) or your `ci_build` command.
 
 ## Releasing
 
@@ -236,7 +318,9 @@ Top level: `app` (slug, required), `test` (optional command), `targets` (≥ 1).
 | Key | Default | |
 | --- | --- | --- |
 | `package` | required | application id |
-| `gradle_task` | `bundleRelease` | |
+| `gradle_task` | `bundleRelease` | release build task |
+| `ci_task` | `assembleDebug` | PR-check Gradle task (no signing secrets available) |
+| `ci_build` | none | PR-check command instead of `./gradlew <ci_task>` (e.g. `flutter build apk --debug`) |
 | `build` | none | replaces `./gradlew <gradle_task>` (e.g. Flutter) |
 | `flutter` | none | install this Flutter version first |
 | `aab` | `app/build/outputs/bundle/release/app-release.aab` | bundle produced by the build |
@@ -316,13 +400,13 @@ yq -o=json . examples/chrome-only.release.yaml > /tmp/r.json && node scripts/val
 Layout:
 
 ```
-.github/workflows/  release.yml promote.yml status.yml (reusable) · dashboard.yml ci.yml (this repo)
+.github/workflows/  release.yml promote.yml status.yml app-ci.yml (reusable) · dashboard.yml ci.yml (this repo)
 scripts/            cws.mjs play.mjs version.mjs validate.mjs package-chrome.mjs changelog.mjs status.mjs summary.mjs
 scripts/lib/        http.mjs (Google API client) gha.mjs (runner helpers) schema.mjs (tiny JSON Schema validator)
 schema/             release.schema.json
 templates/          caller workflows to copy into app repos
 examples/           release.yaml examples
-tests/              node:test suites + fixtures (CI runs a real dry run against tests/fixtures/chrome-app)
+tests/              node:test suites + fixtures (CI runs app-ci.yml and a release dry run against tests/fixtures/chrome-app)
 apps.yaml           dashboard registry
 ```
 

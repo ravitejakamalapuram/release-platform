@@ -19,7 +19,7 @@ test('accepts a minimal and a full config', () => {
       { ...chrome, build: 'npm ci && npm run build', node: '22', include: ['manifest.json', 'dist/**'], publish: false },
       {
         ...android, gradle_task: 'bundleRelease', aab: 'app/build/outputs/bundle/release/app-release.aab', java: '17',
-        track: 'internal', release_status: 'draft', release_notes: 'CHANGELOG.md', flutter: '3.24.0',
+        track: 'internal', release_status: 'draft', ci_task: 'assembleDebug', ci_build: 'flutter build apk --debug', release_notes: 'CHANGELOG.md', flutter: '3.24.0',
         signing: { keystore_base64: 'RELEASE_KEYSTORE_BASE64', key_alias: 'RELEASE_KEY_ALIAS' },
       },
     ],
@@ -39,6 +39,7 @@ test('rejects bad configs with a pointed message', () => {
   invalid({ app: 'x', targets: [{ type: 'ios', bundle: 'x' }] }, /targets\[0\]\.type: must be one of "chrome", "android"/);
   invalid({ app: 'x', targets: [{ ...chrome, path: '../outside' }] }, /path: must match/);
   invalid({ app: 'x', targets: [{ ...android, signing: { keystore_base64: 'has-dash' } }] }, /secret name/);
+  invalid({ app: 'x', targets: [{ ...android, ci_task: 'rm -rf /' }] }, /ci_task: must match/);
   invalid({ app: 'x', targets: [{ ...android, release_status: 'halted' }] }, /one of "completed", "draft"/);
   invalid({ app: 'x', targets: [chrome, chrome] }, /duplicate target chrome:/);
   invalid({ app: 'x', extra: 1, targets: [chrome] }, /unknown property "extra"/);
@@ -54,6 +55,9 @@ test('normalizeTarget fills defaults', () => {
   assert.equal(a.aab, 'app/build/outputs/bundle/release/app-release.aab');
   assert.equal(a.track, 'internal');
   assert.equal(a.release_status, 'completed');
+  assert.equal(a.ci_task, 'assembleDebug');
+  assert.equal(a.ci_build, '');
+  assert.equal(normalizeTarget({ ...android, ci_task: 'app:assembleRelease', ci_build: 'flutter build apk --debug' }, 0).ci_build, 'flutter build apk --debug');
   assert.deepEqual(a.signing, {
     keystore_base64: 'ANDROID_KEYSTORE_BASE64', keystore_password: 'ANDROID_KEYSTORE_PASSWORD',
     key_alias: 'RELEASE_KEY_ALIAS', key_password: 'ANDROID_KEY_PASSWORD',

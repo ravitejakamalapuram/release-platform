@@ -5,7 +5,10 @@
   "description": "Release contract for an app repo consumed by ravitejakamalapuram/release-platform.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["app", "targets"],
+  "required": [
+    "app",
+    "targets"
+  ],
   "properties": {
     "app": {
       "type": "string",
@@ -21,7 +24,16 @@
     "targets": {
       "type": "array",
       "minItems": 1,
-      "items": { "oneOf": [{ "$ref": "#/$defs/chrome" }, { "$ref": "#/$defs/android" }] }
+      "items": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/chrome"
+          },
+          {
+            "$ref": "#/$defs/android"
+          }
+        ]
+      }
     }
   },
   "$defs": {
@@ -34,22 +46,42 @@
     "chrome": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "item_id", "path"],
+      "required": [
+        "type",
+        "item_id",
+        "path"
+      ],
       "properties": {
-        "type": { "const": "chrome" },
+        "type": {
+          "const": "chrome"
+        },
         "item_id": {
           "type": "string",
           "pattern": "^[a-p]{32}$",
           "patternHint": "the 32-letter Chrome Web Store item id"
         },
-        "path": { "$ref": "#/$defs/relativePath", "description": "Directory containing manifest.json after the build step." },
-        "build": { "type": "string", "minLength": 1, "description": "Optional build command, run in the repo root." },
-        "node": { "type": "string", "pattern": "^\\d+(\\.\\d+){0,2}(\\.x)?$", "patternHint": "e.g. '22'" },
+        "path": {
+          "$ref": "#/$defs/relativePath",
+          "description": "Directory containing manifest.json after the build step."
+        },
+        "build": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional build command, run in the repo root."
+        },
+        "node": {
+          "type": "string",
+          "pattern": "^\\d+(\\.\\d+){0,2}(\\.x)?$",
+          "patternHint": "e.g. '22'"
+        },
         "include": {
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
-          "items": { "type": "string", "minLength": 1 },
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
           "description": "Allowlist of files/dirs/globs (relative to path). Default: everything minus common junk."
         },
         "publish": {
@@ -61,38 +93,84 @@
     "android": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "package"],
+      "required": [
+        "type",
+        "package"
+      ],
       "properties": {
-        "type": { "const": "android" },
+        "type": {
+          "const": "android"
+        },
         "package": {
           "type": "string",
           "pattern": "^[a-zA-Z][a-zA-Z0-9_]*(\\.[a-zA-Z][a-zA-Z0-9_]*)+$",
           "patternHint": "an Android application id like com.example.app"
         },
-        "gradle_task": { "type": "string", "pattern": "^[A-Za-z0-9:_-]+$" },
+        "gradle_task": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9:_-]+$"
+        },
         "build": {
           "type": "string",
           "minLength": 1,
           "description": "Custom build command instead of ./gradlew <gradle_task> (e.g. Flutter). VERSION_NAME and VERSION_CODE are exported."
         },
-        "flutter": { "type": "string", "pattern": "^\\d+\\.\\d+(\\.\\d+)?(\\.x)?$", "description": "Install this Flutter version before building." },
-        "aab": { "$ref": "#/$defs/relativePath" },
-        "java": { "type": "string", "pattern": "^\\d+$", "patternHint": "e.g. '17'" },
-        "track": { "type": "string", "minLength": 1, "description": "Play track to upload to (default internal)." },
+        "ci_task": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9:_-]+$",
+          "description": "Gradle task for PR checks (app-ci.yml), built without signing secrets. Default assembleDebug."
+        },
+        "ci_build": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Custom PR-check build command instead of ./gradlew <ci_task> (e.g. flutter build apk --debug)."
+        },
+        "flutter": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+(\\.\\d+)?(\\.x)?$",
+          "description": "Install this Flutter version before building."
+        },
+        "aab": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "java": {
+          "type": "string",
+          "pattern": "^\\d+$",
+          "patternHint": "e.g. '17'"
+        },
+        "track": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Play track to upload to (default internal)."
+        },
         "release_status": {
-          "enum": ["completed", "draft"],
+          "enum": [
+            "completed",
+            "draft"
+          ],
           "description": "completed (default) rolls out to the track; draft is required while the app itself is still a draft in Play Console."
         },
-        "release_notes": { "$ref": "#/$defs/relativePath", "description": "Markdown changelog; its first section becomes the en-US 'What's new' text." },
+        "release_notes": {
+          "$ref": "#/$defs/relativePath",
+          "description": "Markdown changelog; its first section becomes the en-US 'What's new' text."
+        },
         "signing": {
           "type": "object",
           "additionalProperties": false,
           "description": "Names of the GitHub secrets (in the app repo) that hold the upload key.",
           "properties": {
-            "keystore_base64": { "$ref": "#/$defs/secretName" },
-            "keystore_password": { "$ref": "#/$defs/secretName" },
-            "key_alias": { "$ref": "#/$defs/secretName" },
-            "key_password": { "$ref": "#/$defs/secretName" }
+            "keystore_base64": {
+              "$ref": "#/$defs/secretName"
+            },
+            "keystore_password": {
+              "$ref": "#/$defs/secretName"
+            },
+            "key_alias": {
+              "$ref": "#/$defs/secretName"
+            },
+            "key_password": {
+              "$ref": "#/$defs/secretName"
+            }
           }
         }
       }

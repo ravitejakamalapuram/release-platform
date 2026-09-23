@@ -1,0 +1,212 @@
+# Reusable PR checks for app repos: validate release.yaml, run the test gate, and build + package
+# every target exactly as a release would, minus signing and uploading.
+#
+# Callers (see templates/ci-caller.yml) need only:
+#   permissions: { contents: read, actions: read }
+# No id-token, no secrets: safe for pull requests, including from forks.
+name: app-ci
+
+on:
+  workflow_call:
+    inputs:
+      directory:
+        description: 'Directory (inside the caller repo) that contains release.yaml'
+        type: string
+        default: '.'
+      targets:
+        description: 'Optional comma list of target types to check (chrome,android). Empty = all.'
+        type: string
+        default: ''
+      platform_ref:
+        description: 'Advanced: release-platform ref for the helper scripts. Default: the ref this workflow was called at.'
+        type: string
+        default: ''
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  plan:
+    name: Validate and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read   # read this run's referenced_workflows to find the release-platform commit
+    outputs:
+      platform_sha: ${{ steps.platform.outputs.sha }}
+      app: ${{ steps.config.outputs.app }}
+      chrome: ${{ steps.config.outputs.chrome }}
+      android: ${{ steps.config.outputs.android }}
+    steps:
+      # Without id-token there is no OIDC claim to read, so ask the Actions API which commit of
+      # app-ci.yml this run is using.
+      - name: Resolve release-platform ref
+        id: platform
+        env:
+          OVERRIDE: ${{ inputs.platform_ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha="$OVERRIDE"
+          if [ -z "$sha" ]; then
+            sha=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+              --jq '[.referenced_workflows[]? | select(.path | startswith("ravitejakamalapuram/release-platform/.github/workflows/app-ci.yml"))][0].sha // empty' || true)
+          fi
+          if [ -z "$sha" ] && [ "$GITHUB_REPOSITORY" = "ravitejakamalapuram/release-platform" ]; then
+            sha="$GITHUB_SHA"
+          fi
+          if [ -z "$sha" ]; then
+            echo "::error::Could not determine the release-platform ref. Grant 'actions: read' to the calling job or pass platform_ref."
+            exit 1
+          fi
+          echo "release-platform @ $sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v7
+        with:
+          repository: ravitejakamalapuram/release-platform
+          ref: ${{ steps.platform.outputs.sha }}
+          path: platform
+          persist-credentials: false
+
+      - uses: actions/checkout@v7
+        with:
+          path: app
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          package-manager-cache: false
+          node-version: '22'
+
+      - name: Validate release.yaml
+        id: config
+        working-directory: app/${{ inputs.directory }}
+        env:
+          TARGETS: ${{ inputs.targets }}
+          DIRECTORY: ${{ inputs.directory }}
+        run: |
+          if [ ! -f release.yaml ]; then
+            echo "::error::No release.yaml in '$DIRECTORY'. See https://github.com/ravitejakamalapuram/release-platform#onboarding"
+            exit 1
+          fi
+          yq -o=json '.' release.yaml > "$RUNNER_TEMP/release.json"
+          node "$GITHUB_WORKSPACE/platform/scripts/validate.mjs" --config "$RUNNER_TEMP/release.json" --repo . --targets "$TARGETS"
+
+      - name: Test gate
+        if: steps.config.outputs.test != ''
+        working-directory: app/${{ inputs.directory }}
+        env:
+          TEST_COMMAND: ${{ steps.config.outputs.test }}
+        run: |
+          echo "::group::$TEST_COMMAND"
+          bash -euo pipefail -c "$TEST_COMMAND"
+          echo "::endgroup::"
+
+  chrome:
+    name: Build chrome (${{ matrix.target.item_id }})
+    needs: plan
+    if: needs.plan.outputs.chrome != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.plan.outputs.chrome) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ravitejakamalapuram/release-platform
+          ref: ${{ needs.plan.outputs.platform_sha }}
+          path: platform
+          persist-credentials: false
+
+      - uses: actions/checkout@v7
+        with:
+          path: app
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          package-manager-cache: false
+          node-version: ${{ matrix.target.node }}
+
+      - name: Build
+        if: matrix.target.build != ''
+        working-directory: app/${{ inputs.directory }}
+        env:
+          BUILD_COMMAND: ${{ matrix.target.build }}
+        run: bash -euo pipefail -c "$BUILD_COMMAND"
+
+      - name: Package (checks every file manifest.json references)
+        working-directory: app/${{ inputs.directory }}
+        env:
+          EXT_DIR: ${{ matrix.target.path }}
+          INCLUDE: ${{ toJSON(matrix.target.include) }}
+          OUT: ${{ github.workspace }}/dist/${{ needs.plan.outputs.app }}-ci-chrome.zip
+        run: node "$GITHUB_WORKSPACE/platform/scripts/package-chrome.mjs" --dir "$EXT_DIR" --out "$OUT" --include "$INCLUDE"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ci-${{ matrix.target.key }}
+          path: dist/
+          retention-days: 7
+          if-no-files-found: error
+
+  android:
+    name: Build android (${{ matrix.target.package }})
+    needs: plan
+    if: needs.plan.outputs.android != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.plan.outputs.android) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: app
+          persist-credentials: false
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.target.java }}
+
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+
+      - uses: subosito/flutter-action@v2
+        if: matrix.target.flutter != ''
+        with:
+          flutter-version: ${{ matrix.target.flutter }}
+          channel: stable
+          cache: true
+
+      # No signing secrets exist in this workflow: build an unsigned/debug variant (ci_task,
+      # default assembleDebug) or the app's own ci_build command.
+      - name: Build (${{ matrix.target.ci_build || matrix.target.ci_task }})
+        working-directory: app/${{ inputs.directory }}
+        env:
+          CI_BUILD: ${{ matrix.target.ci_build }}
+          CI_TASK: ${{ matrix.target.ci_task }}
+        run: |
+          if [ -n "$CI_BUILD" ]; then
+            bash -euo pipefail -c "$CI_BUILD"
+          elif [ -f ./gradlew ]; then
+            chmod +x ./gradlew
+            ./gradlew --no-daemon --stacktrace "$CI_TASK"
+          else
+            echo "::error::No ./gradlew in '$PWD'. Set 'ci_build' on the android target (e.g. flutter build apk --debug)."
+            exit 1
+          fi
