@@ -1,0 +1,19 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/ravitejakamalapuram/release-platform/main/schema/release.schema.json
+# One repo, two stores, one version (e.g. TelePort). Both targets must build before either is
+# published, and the vX.Y.Z tag is only created when both stores accepted the release.
+app: teleport
+targets:
+  - type: android
+    package: com.carfry369.teleport
+    gradle_task: bundleRelease
+    java: '17'
+    track: internal
+    release_notes: CHANGELOG.md
+    signing:                                 # TelePort's secrets use RELEASE_* names
+      keystore_base64: RELEASE_KEYSTORE_BASE64
+      keystore_password: RELEASE_KEYSTORE_PASSWORD
+      key_alias: RELEASE_KEY_ALIAS
+      key_password: RELEASE_KEY_PASSWORD
+  - type: chrome
+    item_id: oimdkmacklcheogoakhdgilcedkcbikb
+    path: chrome-extension

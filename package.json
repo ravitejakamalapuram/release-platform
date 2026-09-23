@@ -1,0 +1,10 @@
+{
+  "name": "release-platform",
+  "private": true,
+  "type": "module",
+  "description": "Keyless release pipelines for Chrome Web Store and Google Play",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  }
+}

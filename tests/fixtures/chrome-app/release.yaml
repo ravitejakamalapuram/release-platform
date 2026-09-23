@@ -1,0 +1,8 @@
+# Fixture used by ci.yml's e2e dry run. The item id is fake; dry runs never call the store.
+app: fixture
+test: test -f extension/manifest.json
+targets:
+  - type: chrome
+    item_id: aaaabbbbccccddddeeeeffffgggghhhh
+    path: extension
+    build: mkdir -p extension/generated && date -u > extension/generated/build.txt

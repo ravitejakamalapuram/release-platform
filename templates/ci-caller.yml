@@ -1,0 +1,22 @@
+# Copy to .github/workflows/ci.yml in your app repo.
+# PR checks: validate release.yaml, run `test`, build + package every target (no signing, no upload).
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    permissions:
+      contents: read
+      actions: read   # lets app-ci.yml find which release-platform commit it runs at
+    uses: ravitejakamalapuram/release-platform/.github/workflows/app-ci.yml@v2
+    # Deliberately no `secrets:` and no id-token: PR code never sees credentials.

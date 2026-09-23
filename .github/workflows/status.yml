@@ -1,0 +1,119 @@
+# Reusable, read-only store status: Chrome Web Store fetchStatus + Google Play tracks for every
+# app in apps.yaml (this repo). Writes a Markdown table to the job summary and, optionally,
+# commits STATUS.md as the only file on a branch of the calling repo.
+name: status
+
+on:
+  workflow_call:
+    inputs:
+      registry:
+        description: 'Registry file inside release-platform'
+        type: string
+        default: apps.yaml
+      publish_branch:
+        description: 'If set, force-push STATUS.md to this branch of the calling repo (needs contents: write)'
+        type: string
+        default: ''
+      platform_ref:
+        description: 'Advanced: release-platform ref. Default: the ref this workflow was called at.'
+        type: string
+        default: ''
+
+permissions: {}
+
+env:
+  WIF_PROVIDER: projects/335964689163/locations/global/workloadIdentityPools/github/providers/github-oidc
+  SERVICE_ACCOUNT: release-bot@rk-release-platform.iam.gserviceaccount.com
+  CWS_PUBLISHER_ID: 9637cb78-fa33-49dd-a4cb-91066ff182e3
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # Holds id-token. Safe because it never checks out or runs code from the calling repo: it only
+  # runs release-platform scripts against apps.yaml from release-platform itself.
+  status:
+    name: Store status
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - name: Resolve release-platform ref
+        id: platform
+        env:
+          OVERRIDE: ${{ inputs.platform_ref }}
+        run: |
+          if [ -n "$OVERRIDE" ]; then echo "sha=$OVERRIDE" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+            echo "::error::The calling workflow must grant 'permissions: id-token: write'."; exit 1
+          fi
+          token=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=release-platform-self" | jq -r .value)
+          echo "::add-mask::$token"
+          payload=$(cut -d. -f2 <<<"$token" | tr '_-' '/+')
+          while [ $(( ${#payload} % 4 )) -ne 0 ]; do payload="${payload}="; done
+          echo "sha=$(base64 -d <<<"$payload" | jq -r .job_workflow_sha)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v7
+        with:
+          repository: ravitejakamalapuram/release-platform
+          ref: ${{ steps.platform.outputs.sha }}
+          path: platform
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          package-manager-cache: false
+          node-version: '22'
+
+      - name: Authenticate (Chrome Web Store, read-only)
+        id: cws
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.SERVICE_ACCOUNT }}
+          token_format: access_token
+          access_token_scopes: https://www.googleapis.com/auth/chromewebstore.readonly
+          create_credentials_file: false
+
+      # Play has no read-only scope; status.mjs only ever inserts and then deletes an edit.
+      - name: Authenticate (Google Play)
+        id: play
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.SERVICE_ACCOUNT }}
+          token_format: access_token
+          access_token_scopes: https://www.googleapis.com/auth/androidpublisher
+          create_credentials_file: false
+
+      - name: Query stores
+        env:
+          CWS_TOKEN: ${{ steps.cws.outputs.access_token }}
+          PLAY_TOKEN: ${{ steps.play.outputs.access_token }}
+          REGISTRY: ${{ inputs.registry }}
+        run: |
+          yq -o=json '.' "platform/$REGISTRY" > "$RUNNER_TEMP/apps.json"
+          node platform/scripts/status.mjs --registry "$RUNNER_TEMP/apps.json" --out "$RUNNER_TEMP/STATUS.md"
+
+      - name: Publish STATUS.md
+        if: inputs.publish_branch != ''
+        env:
+          BRANCH: ${{ inputs.publish_branch }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          dir="$RUNNER_TEMP/status-branch"
+          git init -q -b "$BRANCH" "$dir"
+          cp "$RUNNER_TEMP/STATUS.md" "$dir/STATUS.md"
+          cd "$dir"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add STATUS.md
+          git commit -q -m "chore(status): update store status"
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          git -c http.extraheader="AUTHORIZATION: basic $auth" push -q --force \
+            "https://github.com/$GITHUB_REPOSITORY.git" "HEAD:refs/heads/$BRANCH"
+          echo "STATUS.md -> https://github.com/$GITHUB_REPOSITORY/blob/$BRANCH/STATUS.md"

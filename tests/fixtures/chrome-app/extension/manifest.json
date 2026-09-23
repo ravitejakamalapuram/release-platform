@@ -1,0 +1,7 @@
+{
+  "manifest_version": 3,
+  "name": "release-platform fixture",
+  "version": "0.1.0",
+  "background": { "service_worker": "background.js" },
+  "icons": { "16": "icons/16.png" }
+}
