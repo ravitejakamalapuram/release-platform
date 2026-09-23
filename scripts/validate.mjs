@@ -108,6 +108,15 @@ export function testToolchain(config) {
   };
 }
 
+export function matrixIds(plan) {
+  return {
+    chrome_ids: plan.chrome.map((t) => t.item_id),
+    chrome_targets: Object.fromEntries(plan.chrome.map((t) => [t.item_id, t])),
+    android_ids: plan.android.map((t) => t.package),
+    android_targets: Object.fromEntries(plan.android.map((t) => [t.package, t])),
+  };
+}
+
 /** Normalize "1.2" / "1.2.3.4" style versions to MAJOR.MINOR.PATCH. */
 export function toSemver(raw) {
   const parts = String(raw).trim().split('.');
@@ -217,6 +226,13 @@ async function cli() {
   setOutput('e2e_in_release', String(config.e2e_in_release ?? false));
   setOutput('chrome', JSON.stringify(plan.chrome));
   setOutput('android', JSON.stringify(plan.android));
+  // Matrices run over plain ids (so GitHub's job names read "Build chrome (<id>)"); jobs look the
+  // full target up by id.
+  const ids = matrixIds(plan);
+  setOutput('chrome_ids', JSON.stringify(ids.chrome_ids));
+  setOutput('chrome_targets', JSON.stringify(ids.chrome_targets));
+  setOutput('android_ids', JSON.stringify(ids.android_ids));
+  setOutput('android_targets', JSON.stringify(ids.android_targets));
   setOutput('baseline', baseline?.version ?? '');
   const tools = testToolchain(config);
   setOutput('node', tools.node);

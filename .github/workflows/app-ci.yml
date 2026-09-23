@@ -42,6 +42,10 @@ jobs:
       e2e: ${{ steps.config.outputs.e2e }}
       chrome: ${{ steps.config.outputs.chrome }}
       android: ${{ steps.config.outputs.android }}
+      chrome_ids: ${{ steps.config.outputs.chrome_ids }}
+      chrome_targets: ${{ steps.config.outputs.chrome_targets }}
+      android_ids: ${{ steps.config.outputs.android_ids }}
+      android_targets: ${{ steps.config.outputs.android_targets }}
     steps:
       # Without id-token there is no OIDC claim to read, so ask the Actions API which commit of
       # app-ci.yml this run is using.
@@ -158,12 +162,23 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: ${{ fromJSON(needs.plan.outputs.chrome) }}
+        id: ${{ fromJSON(needs.plan.outputs.chrome_ids) }}
     steps:
-      - name: Target ${{ matrix.target.item_id }}
+      - name: Target ${{ matrix.id }}
+        id: target
         env:
-          TARGET: ${{ toJSON(matrix.target) }}
-        run: echo "$TARGET"
+          TARGET: ${{ toJSON(fromJSON(needs.plan.outputs.chrome_targets)[matrix.id]) }}
+        run: |
+          # One output per field; nested/array values as JSON, multi-line safe.
+          while IFS= read -r k; do
+            v=$(jq -r --arg k "$k" '.[$k] | if type == "string" then . else tojson end' <<<"$TARGET")
+            d="EOF_${RANDOM}${RANDOM}"
+            printf '%s<<%s\n%s\n%s\n' "$k" "$d" "$v" "$d" >> "$GITHUB_OUTPUT"
+          done < <(jq -r 'keys[]' <<<"$TARGET")
+          # Flatten signing secret names (Android): signing_keystore_base64, ...
+          jq -r '(.signing // {}) | to_entries[] | "signing_\(.key)=\(.value)"' <<<"$TARGET" >> "$GITHUB_OUTPUT"
+          echo "signing_names=$(jq -r '(.signing // {}) | [.[]] | join(", ")' <<<"$TARGET")" >> "$GITHUB_OUTPUT"
+          jq . <<<"$TARGET"
 
       - uses: actions/checkout@v7
         with:
@@ -180,13 +195,13 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           package-manager-cache: false
-          node-version: ${{ matrix.target.node }}
+          node-version: ${{ steps.target.outputs.node }}
 
       - name: Build
-        if: matrix.target.build != ''
+        if: steps.target.outputs.build != ''
         working-directory: app/${{ inputs.directory }}
         env:
-          BUILD_COMMAND: ${{ matrix.target.build }}
+          BUILD_COMMAND: ${{ steps.target.outputs.build }}
         run: bash -euo pipefail -c "$BUILD_COMMAND"
 
       # EXTENSION_DIR = absolute path of the built extension (the target's `path`). Installing
@@ -196,21 +211,21 @@ jobs:
         working-directory: app/${{ inputs.directory }}
         env:
           E2E_COMMAND: ${{ needs.plan.outputs.e2e }}
-          EXT_PATH: ${{ matrix.target.path }}
+          EXT_PATH: ${{ steps.target.outputs.path }}
         run: |
           EXTENSION_DIR="$(cd "$EXT_PATH" && pwd)" bash -euo pipefail -c "$E2E_COMMAND"
 
       - name: Package (checks every file manifest.json references)
         working-directory: app/${{ inputs.directory }}
         env:
-          EXT_DIR: ${{ matrix.target.path }}
-          INCLUDE: ${{ toJSON(matrix.target.include) }}
+          EXT_DIR: ${{ steps.target.outputs.path }}
+          INCLUDE: ${{ steps.target.outputs.include }}
           OUT: ${{ github.workspace }}/dist/${{ needs.plan.outputs.app }}-ci-chrome.zip
         run: node "$GITHUB_WORKSPACE/platform/scripts/package-chrome.mjs" --dir "$EXT_DIR" --out "$OUT" --include "$INCLUDE"
 
       - uses: actions/upload-artifact@v7
         with:
-          name: ci-${{ matrix.target.key }}
+          name: ci-${{ steps.target.outputs.key }}
           path: dist/
           retention-days: 7
           if-no-files-found: error
@@ -226,12 +241,23 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: ${{ fromJSON(needs.plan.outputs.android) }}
+        id: ${{ fromJSON(needs.plan.outputs.android_ids) }}
     steps:
-      - name: Target ${{ matrix.target.package }}
+      - name: Target ${{ matrix.id }}
+        id: target
         env:
-          TARGET: ${{ toJSON(matrix.target) }}
-        run: echo "$TARGET"
+          TARGET: ${{ toJSON(fromJSON(needs.plan.outputs.android_targets)[matrix.id]) }}
+        run: |
+          # One output per field; nested/array values as JSON, multi-line safe.
+          while IFS= read -r k; do
+            v=$(jq -r --arg k "$k" '.[$k] | if type == "string" then . else tojson end' <<<"$TARGET")
+            d="EOF_${RANDOM}${RANDOM}"
+            printf '%s<<%s\n%s\n%s\n' "$k" "$d" "$v" "$d" >> "$GITHUB_OUTPUT"
+          done < <(jq -r 'keys[]' <<<"$TARGET")
+          # Flatten signing secret names (Android): signing_keystore_base64, ...
+          jq -r '(.signing // {}) | to_entries[] | "signing_\(.key)=\(.value)"' <<<"$TARGET" >> "$GITHUB_OUTPUT"
+          echo "signing_names=$(jq -r '(.signing // {}) | [.[]] | join(", ")' <<<"$TARGET")" >> "$GITHUB_OUTPUT"
+          jq . <<<"$TARGET"
 
       - uses: actions/checkout@v7
         with:
@@ -241,7 +267,7 @@ jobs:
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
-          java-version: ${{ matrix.target.java }}
+          java-version: ${{ steps.target.outputs.java }}
 
       - uses: android-actions/setup-android@v4
         with:
@@ -249,19 +275,19 @@ jobs:
           log-accepted-android-sdk-licenses: false
 
       - uses: subosito/flutter-action@v2
-        if: matrix.target.flutter != ''
+        if: steps.target.outputs.flutter != ''
         with:
-          flutter-version: ${{ matrix.target.flutter }}
+          flutter-version: ${{ steps.target.outputs.flutter }}
           channel: stable
           cache: true
 
       # No signing secrets exist in this workflow: build an unsigned/debug variant (ci_task,
       # default assembleDebug) or the app's own ci_build command.
-      - name: Build (${{ matrix.target.ci_build || matrix.target.ci_task }})
+      - name: Build (${{ steps.target.outputs.ci_build || steps.target.outputs.ci_task }})
         working-directory: app/${{ inputs.directory }}
         env:
-          CI_BUILD: ${{ matrix.target.ci_build }}
-          CI_TASK: ${{ matrix.target.ci_task }}
+          CI_BUILD: ${{ steps.target.outputs.ci_build }}
+          CI_TASK: ${{ steps.target.outputs.ci_task }}
         run: |
           if [ -n "$CI_BUILD" ]; then
             bash -euo pipefail -c "$CI_BUILD"
