@@ -1,0 +1,19 @@
+# Daily store dashboard for every app in apps.yaml.
+# Output: the run's job summary and STATUS.md on the `status` branch.
+name: dashboard
+
+on:
+  schedule:
+    - cron: '30 5 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  status:
+    permissions:
+      contents: write
+      id-token: write
+    uses: ./.github/workflows/status.yml
+    with:
+      publish_branch: status

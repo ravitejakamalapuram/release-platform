@@ -1,0 +1,14 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/ravitejakamalapuram/release-platform/main/schema/release.schema.json
+# Flutter app on Google Play (e.g. InvTrack). Flutter needs a custom build command;
+# VERSION_NAME / VERSION_CODE are exported for it.
+app: invtrack
+test: flutter test
+targets:
+  - type: android
+    package: com.invtracker.inv_tracker
+    flutter: '3.24.5'
+    java: '17'
+    build: flutter build appbundle --release --build-name "$VERSION_NAME" --build-number "$VERSION_CODE"
+    aab: build/app/outputs/bundle/release/app-release.aab
+    track: internal
+    release_notes: CHANGELOG.md

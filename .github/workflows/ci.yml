@@ -1,0 +1,79 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  actionlint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install actionlint (pinned + checksum)
+        env:
+          VERSION: 1.7.7
+          SHA256: 023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757
+        run: |
+          curl -fsSL -o actionlint.tgz "https://github.com/rhysd/actionlint/releases/download/v${VERSION}/actionlint_${VERSION}_linux_amd64.tar.gz"
+          echo "${SHA256}  actionlint.tgz" | sha256sum -c -
+          tar xzf actionlint.tgz actionlint
+      - name: actionlint (with shellcheck)
+        run: ./actionlint -color .github/workflows/*.yml templates/*.yml
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Unit tests
+        run: node --test tests/*.test.mjs
+      - name: Validate example and fixture release.yaml files
+        run: |
+          for f in examples/*.yaml tests/fixtures/*/release.yaml; do
+            echo "::group::$f"
+            yq -o=json '.' "$f" > "$RUNNER_TEMP/release.json"
+            node scripts/validate.mjs --config "$RUNNER_TEMP/release.json" --repo "$(dirname "$f")"
+            echo "::endgroup::"
+          done
+      - name: Validate apps.yaml
+        run: |
+          yq -o=json '.' apps.yaml > "$RUNNER_TEMP/apps.json"
+          node -e "
+            const r = JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'));
+            for (const a of r.apps) for (const t of a.targets)
+              if (!(t.type === 'chrome' ? /^[a-p]{32}$/.test(t.item_id) : /^[\w.]+$/.test(t.package))) throw new Error('bad target in ' + a.name);
+            console.log(r.apps.length + ' apps OK');
+          " "$RUNNER_TEMP/apps.json"
+
+  # End-to-end dry run of the real reusable workflow against a fixture extension. Exercises
+  # validation, versioning, build, packaging and the keyless Google auth (no store writes).
+  e2e-dry-run:
+    needs: [test]
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: write
+      id-token: write
+    uses: ./.github/workflows/release.yml
+    with:
+      dry_run: true
+      bump: patch
+      directory: tests/fixtures/chrome-app

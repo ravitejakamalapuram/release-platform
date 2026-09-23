@@ -1,0 +1,10 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/ravitejakamalapuram/release-platform/main/schema/release.schema.json
+# Chrome extension built from source (e.g. JSON Workbench).
+app: json-workbench
+test: npm ci && npm test
+targets:
+  - type: chrome
+    item_id: higmlhleblpmdogjccpmjlnilpmhohal
+    build: npm ci && npm run build
+    path: dist                # directory that contains manifest.json after the build
+    node: '22'

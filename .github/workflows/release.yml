@@ -1,0 +1,585 @@
+# Reusable release pipeline: validate -> test -> version -> build all -> publish all -> tag.
+#
+# Callers (see templates/release-caller.yml) need:
+#   permissions: { contents: write, id-token: write }
+#   secrets: inherit          # only Android signing secrets are read
+#
+# Auth is keyless: GitHub OIDC -> Workload Identity Federation -> release-bot service account.
+# The WIF provider only trusts tokens whose job_workflow_ref is a workflow in THIS repo, which is
+# why every store call happens here and never in the caller.
+name: release
+
+on:
+  workflow_call:
+    inputs:
+      bump:
+        description: 'auto (conventional commits) | patch | minor | major'
+        type: string
+        default: auto
+      dry_run:
+        description: 'Validate, test, build and package, but do not upload, tag or release'
+        type: boolean
+        default: false
+      targets:
+        description: 'Optional comma list of target types to release (chrome,android). Empty = all.'
+        type: string
+        default: ''
+      directory:
+        description: 'Directory (inside the caller repo) that contains release.yaml. Tags stay repo-wide.'
+        type: string
+        default: '.'
+      platform_ref:
+        description: 'Advanced: release-platform ref for the helper scripts. Default: the ref this workflow was called at.'
+        type: string
+        default: ''
+    outputs:
+      version:
+        description: 'The released version (X.Y.Z)'
+        value: ${{ jobs.plan.outputs.version }}
+      tag:
+        description: 'The release tag (vX.Y.Z)'
+        value: ${{ jobs.plan.outputs.tag }}
+
+concurrency:
+  group: release-platform-release-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions: {}
+
+env:
+  WIF_PROVIDER: projects/335964689163/locations/global/workloadIdentityPools/github/providers/github-oidc
+  SERVICE_ACCOUNT: release-bot@rk-release-platform.iam.gserviceaccount.com
+  CWS_PUBLISHER_ID: 9637cb78-fa33-49dd-a4cb-91066ff182e3
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      platform_sha: ${{ steps.platform.outputs.sha }}
+      sha: ${{ steps.version.outputs.sha }}
+      app: ${{ steps.config.outputs.app }}
+      chrome: ${{ steps.config.outputs.chrome }}
+      android: ${{ steps.config.outputs.android }}
+      version: ${{ steps.version.outputs.version }}
+      version_code: ${{ steps.version.outputs.version_code }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - name: Resolve release-platform ref
+        id: platform
+        env:
+          OVERRIDE: ${{ inputs.platform_ref }}
+        run: |
+          if [ -n "$OVERRIDE" ]; then
+            echo "sha=$OVERRIDE" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+            echo "::error::The calling workflow must grant 'permissions: id-token: write'."
+            exit 1
+          fi
+          # The OIDC token's job_workflow_sha is the exact commit of this reusable workflow.
+          token=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=release-platform-self" | jq -r .value)
+          echo "::add-mask::$token"
+          payload=$(cut -d. -f2 <<<"$token" | tr '_-' '/+')
+          while [ $(( ${#payload} % 4 )) -ne 0 ]; do payload="${payload}="; done
+          claims=$(base64 -d <<<"$payload")
+          echo "Platform workflow: $(jq -r .job_workflow_ref <<<"$claims")"
+          echo "sha=$(jq -r .job_workflow_sha <<<"$claims")" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout release-platform
+        uses: actions/checkout@v4
+        with:
+          repository: ravitejakamalapuram/release-platform
+          ref: ${{ steps.platform.outputs.sha }}
+          path: platform
+          persist-credentials: false
+
+      - name: Checkout app
+        uses: actions/checkout@v4
+        with:
+          path: app
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Validate release.yaml
+        id: config
+        working-directory: app/${{ inputs.directory }}
+        env:
+          TARGETS: ${{ inputs.targets }}
+          DIRECTORY: ${{ inputs.directory }}
+        run: |
+          if [ ! -f release.yaml ]; then
+            echo "::error::No release.yaml in '$DIRECTORY'. See https://github.com/ravitejakamalapuram/release-platform#onboarding"
+            exit 1
+          fi
+          yq -o=json '.' release.yaml > "$RUNNER_TEMP/release.json"
+          node "$GITHUB_WORKSPACE/platform/scripts/validate.mjs" --config "$RUNNER_TEMP/release.json" --repo . --targets "$TARGETS"
+
+      - name: Test gate
+        if: steps.config.outputs.test != ''
+        working-directory: app/${{ inputs.directory }}
+        env:
+          TEST_COMMAND: ${{ steps.config.outputs.test }}
+        run: |
+          echo "::group::$TEST_COMMAND"
+          bash -euo pipefail -c "$TEST_COMMAND"
+          echo "::endgroup::"
+
+      - name: Compute version
+        id: version
+        working-directory: app/${{ inputs.directory }}
+        env:
+          BUMP: ${{ inputs.bump }}
+          BASELINE: ${{ steps.config.outputs.baseline }}
+        run: |
+          args=(--bump "$BUMP" --notes-file "$RUNNER_TEMP/notes.md")
+          if [ -n "$BASELINE" ]; then args+=(--baseline "$BASELINE"); fi
+          node "$GITHUB_WORKSPACE/platform/scripts/version.mjs" "${args[@]}"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure tag is free
+        working-directory: app
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "::error::Tag $TAG already exists. Pass an explicit bump or delete the stale tag."
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: ${{ runner.temp }}/notes.md
+          if-no-files-found: error
+
+  build-chrome:
+    name: Build chrome (${{ matrix.target.item_id }})
+    needs: plan
+    if: needs.plan.outputs.chrome != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: true
+      matrix:
+        target: ${{ fromJSON(needs.plan.outputs.chrome) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ravitejakamalapuram/release-platform
+          ref: ${{ needs.plan.outputs.platform_sha }}
+          path: platform
+          persist-credentials: false
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          path: app
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.target.node }}
+
+      - name: Build
+        if: matrix.target.build != ''
+        working-directory: app/${{ inputs.directory }}
+        env:
+          BUILD_COMMAND: ${{ matrix.target.build }}
+          VERSION_NAME: ${{ needs.plan.outputs.version }}
+        run: bash -euo pipefail -c "$BUILD_COMMAND"
+
+      - name: Package
+        working-directory: app/${{ inputs.directory }}
+        env:
+          EXT_DIR: ${{ matrix.target.path }}
+          INCLUDE: ${{ toJSON(matrix.target.include) }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          OUT: ${{ github.workspace }}/dist/${{ needs.plan.outputs.app }}-${{ needs.plan.outputs.version }}-chrome.zip
+        run: node "$GITHUB_WORKSPACE/platform/scripts/package-chrome.mjs" --dir "$EXT_DIR" --version "$VERSION" --out "$OUT" --include "$INCLUDE"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-${{ matrix.target.key }}
+          path: dist/
+          if-no-files-found: error
+
+  build-android:
+    name: Build android (${{ matrix.target.package }})
+    needs: plan
+    if: needs.plan.outputs.android != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: true
+      matrix:
+        target: ${{ fromJSON(needs.plan.outputs.android) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ravitejakamalapuram/release-platform
+          ref: ${{ needs.plan.outputs.platform_sha }}
+          path: platform
+          persist-credentials: false
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          path: app
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+          path: ${{ runner.temp }}/notes
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.target.java }}
+
+      # Installs cmdline-tools and accepts licenses. Only platform-tools is requested: the legacy
+      # "tools" package (this action's historical default) no longer exists. AGP downloads the
+      # platform/build-tools it needs on demand.
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+
+      - uses: subosito/flutter-action@v2
+        if: matrix.target.flutter != ''
+        with:
+          flutter-version: ${{ matrix.target.flutter }}
+          channel: stable
+          cache: true
+
+      - name: Prepare upload key
+        id: keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets[matrix.target.signing.keystore_base64] }}
+          KEYSTORE_PASSWORD: ${{ secrets[matrix.target.signing.keystore_password] }}
+          KEY_ALIAS: ${{ secrets[matrix.target.signing.key_alias] }}
+          KEY_PASSWORD: ${{ secrets[matrix.target.signing.key_password] }}
+          NAMES: ${{ join(matrix.target.signing.*, ', ') }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEYSTORE_PASSWORD" ] || [ -z "$KEY_ALIAS" ] || [ -z "$KEY_PASSWORD" ]; then
+            msg="Android signing secrets missing. Expected repo secrets: $NAMES (and the caller must use 'secrets: inherit')."
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "::warning::$msg Building without the upload key (dry run)."
+              echo "signed=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::error::$msg"
+            exit 1
+          fi
+          keystore="$RUNNER_TEMP/upload-key.jks"
+          base64 -d <<<"$KEYSTORE_BASE64" > "$keystore"
+          # Project properties understood by the Android Gradle Plugin itself (no app changes needed),
+          # plus conventional names for apps with their own signingConfig. Written to GRADLE_USER_HOME
+          # so passwords never appear on a command line.
+          esc() { printf '%s' "$1" | sed 's/\\/\\\\/g'; }
+          mkdir -p ~/.gradle
+          {
+            echo "android.injected.signing.store.file=$(esc "$keystore")"
+            echo "android.injected.signing.store.password=$(esc "$KEYSTORE_PASSWORD")"
+            echo "android.injected.signing.key.alias=$(esc "$KEY_ALIAS")"
+            echo "android.injected.signing.key.password=$(esc "$KEY_PASSWORD")"
+          } >> ~/.gradle/gradle.properties
+          echo "file=$keystore" >> "$GITHUB_OUTPUT"
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        working-directory: app/${{ inputs.directory }}
+        env:
+          VERSION_NAME: ${{ needs.plan.outputs.version }}
+          VERSION_CODE: ${{ needs.plan.outputs.version_code }}
+          BUILD_COMMAND: ${{ matrix.target.build }}
+          GRADLE_TASK: ${{ matrix.target.gradle_task }}
+          # Conventional env names for apps whose Gradle reads signing from the environment.
+          RELEASE_KEYSTORE_FILE: ${{ steps.keystore.outputs.file }}
+          RELEASE_KEYSTORE_PASSWORD: ${{ secrets[matrix.target.signing.keystore_password] }}
+          RELEASE_KEY_ALIAS: ${{ secrets[matrix.target.signing.key_alias] }}
+          RELEASE_KEY_PASSWORD: ${{ secrets[matrix.target.signing.key_password] }}
+          KEYSTORE_FILE: ${{ steps.keystore.outputs.file }}
+          KEYSTORE_PASSWORD: ${{ secrets[matrix.target.signing.keystore_password] }}
+          KEY_ALIAS: ${{ secrets[matrix.target.signing.key_alias] }}
+          KEY_PASSWORD: ${{ secrets[matrix.target.signing.key_password] }}
+        run: |
+          if [ -n "$BUILD_COMMAND" ]; then
+            bash -euo pipefail -c "$BUILD_COMMAND"
+          else
+            chmod +x ./gradlew
+            ./gradlew --no-daemon --stacktrace "$GRADLE_TASK" -PversionCode="$VERSION_CODE" -PversionName="$VERSION_NAME"
+          fi
+
+      - name: Collect bundle and release notes
+        working-directory: app/${{ inputs.directory }}
+        env:
+          AAB: ${{ matrix.target.aab }}
+          NOTES_FILE: ${{ matrix.target.release_notes }}
+          OUT_DIR: ${{ github.workspace }}/dist
+          NAME: ${{ needs.plan.outputs.app }}-${{ needs.plan.outputs.version }}-${{ matrix.target.package }}
+        run: |
+          if [ ! -f "$AAB" ]; then
+            echo "::error::Bundle not found at '$AAB'. Set 'aab' on the android target to the path your build produces."
+            exit 1
+          fi
+          mkdir -p "$OUT_DIR"
+          cp "$AAB" "$OUT_DIR/$NAME.aab"
+          if [ -n "$NOTES_FILE" ] && [ -f "$NOTES_FILE" ]; then source="$NOTES_FILE"; else source="$RUNNER_TEMP/notes/notes.md"; fi
+          node --input-type=module -e "
+            import { readFileSync, writeFileSync } from 'node:fs';
+            import { playNotes } from '$GITHUB_WORKSPACE/platform/scripts/changelog.mjs';
+            writeFileSync(process.argv[2], playNotes(readFileSync(process.argv[1], 'utf8')));
+          " "$source" "$OUT_DIR/$NAME.whatsnew.txt"
+          echo "What's new ($source):"
+          cat "$OUT_DIR/$NAME.whatsnew.txt"
+
+      - name: Remove upload key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/upload-key.jks" ~/.gradle/gradle.properties
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-${{ matrix.target.key }}
+          path: dist/
+          if-no-files-found: error
+
+  publish-chrome:
+    name: Publish chrome (${{ matrix.target.item_id }})
+    needs: [plan, build-chrome, build-android]
+    # Publish only once EVERY target has built, so a broken Android build never leaves a
+    # half-released version on the Chrome Web Store.
+    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && needs.plan.outputs.chrome != '[]' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.plan.outputs.chrome) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ravitejakamalapuram/release-platform
+          ref: ${{ needs.plan.outputs.platform_sha }}
+          path: platform
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: pkg-${{ matrix.target.key }}
+          path: dist
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Authenticate to Google (keyless)
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.SERVICE_ACCOUNT }}
+          token_format: access_token
+          access_token_scopes: https://www.googleapis.com/auth/chromewebstore
+          create_credentials_file: false
+
+      - name: Upload and submit for review
+        id: publish
+        if: ${{ !inputs.dry_run }}
+        env:
+          GOOGLE_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          ITEM: ${{ matrix.target.item_id }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          SUBMIT: ${{ matrix.target.publish }}
+        run: |
+          args=(release --item "$ITEM" --zip "$(ls dist/*.zip)" --version "$VERSION")
+          if [ "$SUBMIT" != "true" ]; then args+=(--no-publish); fi
+          node platform/scripts/cws.mjs "${args[@]}"
+
+      - name: Record result
+        if: always()
+        env:
+          KEY: ${{ matrix.target.key }}
+          OUTCOME: ${{ inputs.dry_run && 'dry-run' || steps.publish.outcome }}
+          RESULT: ${{ steps.publish.outputs.result }}
+        run: |
+          mkdir -p results
+          case "$OUTCOME" in
+            success) jq -n --arg k "$KEY" --arg r "$RESULT" '{key:$k, ok:true, result:$r}' ;;
+            dry-run) jq -n --arg k "$KEY" '{key:$k, ok:true, result:"dry run (packaged, not uploaded)"}' ;;
+            *) jq -n --arg k "$KEY" --arg o "$OUTCOME" '{key:$k, ok:false, result:("FAILED (" + $o + ") - see job log")}' ;;
+          esac > "results/$KEY.json"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: result-${{ matrix.target.key }}
+          path: results/
+
+  publish-android:
+    name: Publish android (${{ matrix.target.package }})
+    needs: [plan, build-chrome, build-android]
+    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && needs.plan.outputs.android != '[]' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.plan.outputs.android) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ravitejakamalapuram/release-platform
+          ref: ${{ needs.plan.outputs.platform_sha }}
+          path: platform
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: pkg-${{ matrix.target.key }}
+          path: dist
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Authenticate to Google (keyless)
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.SERVICE_ACCOUNT }}
+          token_format: access_token
+          access_token_scopes: https://www.googleapis.com/auth/androidpublisher
+          create_credentials_file: false
+
+      - name: Upload to Play
+        id: publish
+        if: ${{ !inputs.dry_run }}
+        env:
+          GOOGLE_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          PACKAGE: ${{ matrix.target.package }}
+          TRACK: ${{ matrix.target.track }}
+          STATUS: ${{ matrix.target.release_status }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          VERSION_CODE: ${{ needs.plan.outputs.version_code }}
+        run: |
+          node platform/scripts/play.mjs upload --package "$PACKAGE" --aab "$(ls dist/*.aab)" \
+            --track "$TRACK" --status "$STATUS" --version "$VERSION" --version-code "$VERSION_CODE" \
+            --notes-file "$(ls dist/*.whatsnew.txt)"
+
+      - name: Record result
+        if: always()
+        env:
+          KEY: ${{ matrix.target.key }}
+          OUTCOME: ${{ inputs.dry_run && 'dry-run' || steps.publish.outcome }}
+          RESULT: ${{ steps.publish.outputs.result }}
+        run: |
+          mkdir -p results
+          case "$OUTCOME" in
+            success) jq -n --arg k "$KEY" --arg r "$RESULT" '{key:$k, ok:true, result:$r}' ;;
+            dry-run) jq -n --arg k "$KEY" '{key:$k, ok:true, result:"dry run (built, not uploaded)"}' ;;
+            *) jq -n --arg k "$KEY" --arg o "$OUTCOME" '{key:$k, ok:false, result:("FAILED (" + $o + ") - see job log")}' ;;
+          esac > "results/$KEY.json"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: result-${{ matrix.target.key }}
+          path: results/
+
+  release:
+    name: Tag and release
+    needs: [plan, build-chrome, build-android, publish-chrome, publish-android]
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ravitejakamalapuram/release-platform
+          ref: ${{ needs.plan.outputs.platform_sha }}
+          path: platform
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: result-*
+          path: results
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: pkg-*
+          path: dist
+          merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+          path: notes
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Summary
+        env:
+          CHROME: ${{ needs.plan.outputs.chrome }}
+          ANDROID: ${{ needs.plan.outputs.android }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          args=(--chrome "$CHROME" --android "$ANDROID" --results results --version "$VERSION" --tag "$TAG")
+          if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
+          node platform/scripts/summary.mjs "${args[@]}"
+
+      - name: Refuse to tag a partial release
+        if: contains(needs.*.result, 'failure')
+        run: |
+          echo "::error::At least one target failed, so no tag was created. Fix it and use 'Re-run failed jobs' to retry with the same version."
+          exit 1
+
+      - name: Create tag and GitHub Release
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          SHA: ${{ needs.plan.outputs.sha }}
+        run: |
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$SHA" --title "$TAG" \
+            --notes-file notes/notes.md dist/*
+          echo "Released $TAG at $SHA"

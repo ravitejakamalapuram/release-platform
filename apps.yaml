@@ -1,0 +1,40 @@
+# Registry of every app the dashboard reports on (read-only status; releases are driven by each
+# app repo's own release.yaml). Add a row here when onboarding a new app.
+apps:
+  - name: EchoKit
+    repo: ravitejakamalapuram/echokit
+    targets:
+      - { type: chrome, item_id: jndhbmaokpclbpjoogffaimahadpidcf }
+  - name: JSON Workbench
+    repo: ravitejakamalapuram/json-workbench
+    targets:
+      - { type: chrome, item_id: higmlhleblpmdogjccpmjlnilpmhohal }
+  - name: CORS Enabler
+    repo: ravitejakamalapuram/cors-enabler
+    targets:
+      - { type: chrome, item_id: bfegjbdhenoahnnajgmlkcdkfcjgnjjc }
+  - name: Session Transfer
+    repo: ravitejakamalapuram/session-transfer
+    targets:
+      - { type: chrome, item_id: fnfmlchbfofjdfeibgdkcibfjjlfcefc }
+  - name: StellarTab
+    repo: ravitejakamalapuram/StellarTab
+    targets:
+      - { type: chrome, item_id: efpigokkcblmjdnameafogblekknbhdc }
+  - name: GitaVerses
+    repo: ravitejakamalapuram/GitaVerses
+    targets:
+      - { type: chrome, item_id: hebmlallhbgfnjjcnilphllknhfoddnk }
+  - name: TeluguPanchangam
+    repo: ravitejakamalapuram/TeluguPanchangam
+    targets:
+      - { type: chrome, item_id: obgpdlhkahmdiepklldjnnmfmbhmgenn }
+  - name: TelePort
+    repo: ravitejakamalapuram/TelePort
+    targets:
+      - { type: android, package: com.carfry369.teleport }
+      - { type: chrome, item_id: oimdkmacklcheogoakhdgilcedkcbikb }
+  - name: InvTrack
+    repo: ravitejakamalapuram/InvTrack
+    targets:
+      - { type: android, package: com.invtracker.inv_tracker }
