@@ -4,8 +4,8 @@
 //   yq -o=json . release.yaml > release.json
 //   node scripts/validate.mjs --config release.json --repo . --targets chrome
 //
-// Outputs: app, test, chrome (JSON array), android (JSON array), baseline.
-import { existsSync, readFileSync } from 'node:fs';
+// Outputs: app, test, e2e, e2e_in_release, chrome (JSON array), android (JSON array), baseline.
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -110,30 +110,69 @@ export function versionFromPubspec(text) {
   return m ? toSemver(m[1]) : null;
 }
 
-/** Version recorded in the repo for the first target; used only when there is no v* tag yet. */
-export function detectBaseline(target, repo) {
-  const read = (p) => (existsSync(join(repo, p)) ? readFileSync(join(repo, p), 'utf8') : null);
-  if (target.type === 'chrome') {
-    for (const p of [`${target.path}/manifest.json`, 'manifest.json', 'src/manifest.json', 'public/manifest.json', 'package.json']) {
-      const text = read(p);
-      if (!text) continue;
-      try {
-        const v = toSemver(JSON.parse(text).version ?? '');
-        if (v) return { version: v, source: p };
-      } catch {
-        // ignore unparsable files
-      }
+/** Read a version out of one file, by file type. Returns null if none is found. */
+export function versionFromFile(path, text) {
+  const name = path.split('/').pop();
+  if (name.endsWith('.json')) {
+    try {
+      return toSemver(JSON.parse(text).version ?? '');
+    } catch {
+      return null;
     }
-    return null;
   }
-  for (const p of ['app/build.gradle.kts', 'app/build.gradle', 'android/app/build.gradle.kts', 'android/app/build.gradle']) {
+  if (/\.gradle(\.kts)?$/.test(name)) return versionFromGradle(text);
+  if (name === 'pubspec.yaml' || name === 'pubspec.yml') return versionFromPubspec(text);
+  const m = /^\s*version\s*[:=]\s*['"]?(\d+(?:\.\d+){1,3})/m.exec(text);
+  return m ? toSemver(m[1]) : null;
+}
+
+const BUILD_DIRS = /\/(dist|build|out|release)$/;
+
+/**
+ * Candidate files that may hold a chrome target's *source* version, most specific first.
+ * `path` is usually a build output (e.g. apps/extension/dist) that does not exist before the
+ * build, so we also look next to it and in common source layouts. Only JSON is read; files like
+ * manifest.config.ts are not parseable here and are skipped.
+ */
+export function chromeVersionCandidates(target, repo) {
+  const path = target.path.replace(/\/+$/, '');
+  const parent = BUILD_DIRS.test(path) ? path.replace(BUILD_DIRS, '') : null;
+  const out = [`${path}/manifest.json`];
+  if (parent) out.push(`${parent}/manifest.json`, `${parent}/public/manifest.json`, `${parent}/src/manifest.json`, `${parent}/static/manifest.json`);
+  out.push('manifest.json', 'public/manifest.json', 'src/manifest.json');
+  const appsDir = join(repo, 'apps');
+  if (existsSync(appsDir)) {
+    for (const d of readdirSync(appsDir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort()) {
+      out.push(`apps/${d}/manifest.json`, `apps/${d}/public/manifest.json`, `apps/${d}/src/manifest.json`);
+    }
+  }
+  if (parent) out.push(`${parent}/package.json`);
+  out.push('package.json');
+  return [...new Set(out)];
+}
+
+const ANDROID_CANDIDATES = ['app/build.gradle.kts', 'app/build.gradle', 'android/app/build.gradle.kts', 'android/app/build.gradle', 'pubspec.yaml'];
+
+/**
+ * Version recorded in the repo; used only when there is no v* tag yet.
+ * An explicit `version_file` wins (and must yield a version); otherwise the first target decides.
+ */
+export function detectBaseline(target, repo, versionFile) {
+  const read = (p) => (existsSync(join(repo, p)) && statSync(join(repo, p)).isFile() ? readFileSync(join(repo, p), 'utf8') : null);
+  if (versionFile) {
+    const text = read(versionFile);
+    if (text === null) throw new Error(`version_file "${versionFile}" does not exist`);
+    const version = versionFromFile(versionFile, text);
+    if (!version) throw new Error(`version_file "${versionFile}" does not contain a recognizable version`);
+    return { version, source: `${versionFile} (version_file)` };
+  }
+  const candidates = target.type === 'chrome' ? chromeVersionCandidates(target, repo) : ANDROID_CANDIDATES;
+  for (const p of candidates) {
     const text = read(p);
-    const v = text && versionFromGradle(text);
-    if (v) return { version: v, source: p };
+    const version = text && versionFromFile(p, text);
+    if (version) return { version, source: p };
   }
-  const pubspec = read('pubspec.yaml');
-  const v = pubspec && versionFromPubspec(pubspec);
-  return v ? { version: v, source: 'pubspec.yaml' } : null;
+  return null;
 }
 
 async function cli() {
@@ -152,12 +191,14 @@ async function cli() {
   }
   checkConfig(config);
   const plan = planTargets(config, values.targets);
-  const baseline = detectBaseline(normalizeTarget(config.targets[0], 0), values.repo);
+  const baseline = detectBaseline(normalizeTarget(config.targets[0], 0), values.repo, config.version_file);
 
   log(`release.yaml OK: app=${config.app}, chrome=${plan.chrome.length}, android=${plan.android.length}`);
-  if (baseline) log(`Baseline version ${baseline.version} (from ${baseline.source})`);
+  log(baseline ? `Baseline version ${baseline.version} (from ${baseline.source}); used only if there is no v* tag` : 'No baseline version found in the repo; an untagged repo starts from 0.0.0');
   setOutput('app', config.app);
   setOutput('test', config.test ?? '');
+  setOutput('e2e', config.e2e ?? '');
+  setOutput('e2e_in_release', String(config.e2e_in_release ?? false));
   setOutput('chrome', JSON.stringify(plan.chrome));
   setOutput('android', JSON.stringify(plan.android));
   setOutput('baseline', baseline?.version ?? '');

@@ -88,3 +88,4 @@ jobs:
       dry_run: true
       bump: patch
       directory: tests/fixtures/chrome-app
+      store_preflight: false   # the fixture's item id is fake; real apps keep the read-only preflight

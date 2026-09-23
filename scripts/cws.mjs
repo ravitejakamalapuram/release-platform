@@ -4,6 +4,7 @@
 //
 //   GOOGLE_ACCESS_TOKEN=... node scripts/cws.mjs release --publisher <id> --item <id> --zip x.zip --version 1.2.3
 //   GOOGLE_ACCESS_TOKEN=... node scripts/cws.mjs status  --publisher <id> --item <id>
+//   GOOGLE_ACCESS_TOKEN=... node scripts/cws.mjs preflight --publisher <id> --item <id> --version 1.2.3   (read-only)
 import { readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
@@ -162,7 +163,20 @@ async function cli() {
     setOutput('status', JSON.stringify(d));
     return;
   }
-  if (command !== 'release') throw new Error(`Unknown command "${command}" (expected release|status)`);
+  if (command === 'preflight') {
+    if (!values.version) throw new Error('--version is required for preflight');
+    const status = await fetchStatus({ publisher, item, token }).catch((err) => {
+      throw explainCwsError(err, item);
+    });
+    const d = describeStatus(status);
+    log(`published: ${d.published}\nsubmitted: ${d.submitted}`);
+    preflight(status, values.version, item);
+    const result = `PREFLIGHT_OK: ${values.version} is uploadable (published: ${d.published})`;
+    log(result);
+    setOutput('result', result);
+    return;
+  }
+  if (command !== 'release') throw new Error(`Unknown command "${command}" (expected release|preflight|status)`);
   if (!values.zip || !values.version) throw new Error('--zip and --version are required for release');
 
   const submit = !values['no-publish'];

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildRelease, changeRollout, latestRelease, listTracks, parseFraction, promote, uploadBundle, urls } from '../scripts/play.mjs';
+import { buildRelease, changeRollout, checkVersionCode, preflight, latestRelease, listTracks, parseFraction, promote, uploadBundle, urls } from '../scripts/play.mjs';
 import { fakeFetch, googleError } from './helpers.mjs';
 
 const PKG = 'com.carfry369.teleport';
@@ -155,4 +155,17 @@ test('helpers', () => {
   assert.throws(() => buildRelease({ name: 'a', versionCodes: [1], status: 'inProgress' }), /between 0 and 1/);
   assert.equal(latestRelease(production, ['completed']).name, '1.2.0');
   assert.equal(latestRelease({}, null), null);
+});
+
+test('preflight is read-only and enforces the versionCode rule', async () => {
+  const tracks = { tracks: [{ track: 'alpha', releases: [{ versionCodes: ['1006017'] }] }] };
+  const ok = fakeFetch([{ body: { id: 'e' } }, { body: tracks }, { body: {} }]);
+  const res = await preflight({ ...base, fetchImpl: ok, versionCode: '1007000' });
+  assert.deepEqual(res.highest, { code: 1006017, track: 'alpha' });
+  assert.equal(ok.calls[2].method, 'DELETE');
+  assert.ok(!ok.calls.some((c) => c.url.includes(':commit')));
+
+  const low = fakeFetch([{ body: { id: 'e' } }, { body: tracks }, { body: {} }]);
+  await assert.rejects(preflight({ ...base, fetchImpl: low, versionCode: '1006017' }), /not higher than 1006017/);
+  assert.deepEqual(checkVersionCode([], '1', PKG), { code: 0, track: null });
 });

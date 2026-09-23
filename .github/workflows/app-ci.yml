@@ -39,6 +39,7 @@ jobs:
     outputs:
       platform_sha: ${{ steps.platform.outputs.sha }}
       app: ${{ steps.config.outputs.app }}
+      e2e: ${{ steps.config.outputs.e2e }}
       chrome: ${{ steps.config.outputs.chrome }}
       android: ${{ steps.config.outputs.android }}
     steps:
@@ -106,6 +107,15 @@ jobs:
           bash -euo pipefail -c "$TEST_COMMAND"
           echo "::endgroup::"
 
+      # e2e normally runs against each built chrome target (see the chrome job). Apps without a
+      # chrome target run it here, right after the test gate.
+      - name: E2E
+        if: steps.config.outputs.e2e != '' && steps.config.outputs.chrome == '[]'
+        working-directory: app/${{ inputs.directory }}
+        env:
+          E2E_COMMAND: ${{ steps.config.outputs.e2e }}
+        run: bash -euo pipefail -c "$E2E_COMMAND"
+
   chrome:
     name: Build chrome (${{ matrix.target.item_id }})
     needs: plan
@@ -142,6 +152,17 @@ jobs:
         env:
           BUILD_COMMAND: ${{ matrix.target.build }}
         run: bash -euo pipefail -c "$BUILD_COMMAND"
+
+      # EXTENSION_DIR = absolute path of the built extension (the target's `path`). Installing
+      # browsers, Python, Playwright, ... is up to the command itself.
+      - name: E2E
+        if: needs.plan.outputs.e2e != ''
+        working-directory: app/${{ inputs.directory }}
+        env:
+          E2E_COMMAND: ${{ needs.plan.outputs.e2e }}
+          EXT_PATH: ${{ matrix.target.path }}
+        run: |
+          EXTENSION_DIR="$(cd "$EXT_PATH" && pwd)" bash -euo pipefail -c "$E2E_COMMAND"
 
       - name: Package (checks every file manifest.json references)
         working-directory: app/${{ inputs.directory }}
