@@ -95,7 +95,11 @@ into shell. When changing a workflow here, keep the table true.
 
 - **Fail fast.** `release.yaml` is validated against [`schema/release.schema.json`](schema/release.schema.json)
   before anything runs, with messages like `$.targets[0].item_id: must match … (the 32-letter Chrome Web Store item id)`.
-- **Test gate.** The optional `test` command runs before anything is built or uploaded.
+- **Test gate.** The optional `test` command runs before anything is built or uploaded, with
+  the toolchain installed explicitly rather than taken from the runner image: Node (the first
+  chrome target's `node`, default 22); if there is any android target, Temurin JDK (the first
+  android target's `java`) plus the Android SDK (`platform-tools` only; AGP fetches the rest);
+  and Flutter when an android target sets `flutter`. The same applies to PR checks.
 - **Build everything, then publish.** Every target is built and packaged first; stores are only
   touched once all builds succeeded.
 - **Never burn a tag.** `vX.Y.Z` and the GitHub Release are created only after *every* target
@@ -151,7 +155,8 @@ targets:
   ```
 
 For Android promotion also copy [`templates/promote-caller.yml`](templates/promote-caller.yml)
-and create a `production` environment (Settings → Environments) with required reviewers.
+and create the `production` environment with required reviewers (see
+[Promoting](#promoting-google-play)).
 
 **3. Android only: upload key + Gradle snippet.**
 
@@ -233,7 +238,7 @@ only after every store accepted the release, and PR checks build exactly what a 
 `app-ci.yml` runs on pull requests and pushes to `main` with **no secrets and no `id-token`**:
 
 1. validate `release.yaml` against the schema,
-2. run the `test` command,
+2. run the `test` command (with the same Node / JDK + Android SDK / Flutter setup as a release),
 3. per target: *chrome* — run `build`, package the zip with the same allow/denylist and
    manifest-reference check as a release (the zip is kept as a 7-day artifact); *android* — run
    `./gradlew <ci_task>` (default `assembleDebug`, unsigned/debug) or your `ci_build` command,
@@ -300,6 +305,26 @@ Run the app's **promote** workflow ([template](templates/promote-caller.yml)). I
 | `complete` | Roll the in-progress/halted release on `to_track` out to 100% |
 
 The package defaults to the first android target in `release.yaml`.
+
+**The app repo needs a `production` environment with required reviewers.** `promote.yml` runs
+its Play job in that environment; if the environment does not exist, GitHub creates an empty one
+on first use, with **no** protection, so the promotion would run unapproved. Create it up front,
+in the UI (Settings → Environments → New environment → Required reviewers) or with `gh`:
+
+```sh
+REPO=ravitejakamalapuram/TelePort
+ME=$(gh api users/ravitejakamalapuram --jq .id)
+gh api -X PUT "repos/$REPO/environments/production" --input - <<JSON
+{ "reviewers": [ { "type": "User", "id": $ME } ], "prevent_self_review": false,
+  "deployment_branch_policy": { "protected_branches": false, "custom_branch_policies": true } }
+JSON
+gh api -X POST "repos/$REPO/environments/production/deployment-branch-policies" -f name=main -f type=branch
+gh api "repos/$REPO/environments/production" --jq '.protection_rules'   # verify
+```
+
+`prevent_self_review: false` lets the owner approve their own runs. Required reviewers are free
+for public repos; private repos need a paid plan (otherwise the environment exists but cannot
+enforce approval). Use the `environment` input to pick another name.
 
 ## Dashboard
 

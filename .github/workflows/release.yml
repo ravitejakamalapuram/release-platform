@@ -150,6 +150,37 @@ jobs:
           yq -o=json '.' release.yaml > "$RUNNER_TEMP/release.json"
           node "$GITHUB_WORKSPACE/platform/scripts/validate.mjs" --config "$RUNNER_TEMP/release.json" --repo . --targets "$TARGETS"
 
+      - name: Node for the test gate
+        if: steps.config.outputs.node != '22'
+        uses: actions/setup-node@v7
+        with:
+          package-manager-cache: false
+          node-version: ${{ steps.config.outputs.node }}
+
+      # Android/Flutter repos: install the toolchain the tests need instead of relying on
+      # whatever the runner image happens to preinstall.
+      - name: Java for the test gate
+        if: steps.config.outputs.java != ''
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: ${{ steps.config.outputs.java }}
+
+      - name: Android SDK for the test gate
+        if: steps.config.outputs.java != ''
+        uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+
+      - name: Flutter for the test gate
+        if: steps.config.outputs.flutter != ''
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ steps.config.outputs.flutter }}
+          channel: stable
+          cache: true
+
       - name: Test gate
         if: steps.config.outputs.test != ''
         working-directory: app/${{ inputs.directory }}
@@ -190,7 +221,7 @@ jobs:
 
   # Runs app code -> no id-token, no secrets.
   build-chrome:
-    name: Build chrome (${{ matrix.target.item_id }})
+    name: Build chrome
     needs: plan
     if: needs.plan.outputs.chrome != '[]'
     runs-on: ubuntu-latest
@@ -202,6 +233,11 @@ jobs:
       matrix:
         target: ${{ fromJSON(needs.plan.outputs.chrome) }}
     steps:
+      - name: Target ${{ matrix.target.item_id }}
+        env:
+          TARGET: ${{ toJSON(matrix.target) }}
+        run: echo "$TARGET"
+
       - uses: actions/checkout@v7
         with:
           repository: ravitejakamalapuram/release-platform
@@ -254,7 +290,7 @@ jobs:
 
   # Runs app code -> no id-token. Only the upload-key secrets are exposed here.
   build-android:
-    name: Build android (${{ matrix.target.package }})
+    name: Build android
     needs: plan
     if: needs.plan.outputs.android != '[]'
     runs-on: ubuntu-latest
@@ -266,6 +302,11 @@ jobs:
       matrix:
         target: ${{ fromJSON(needs.plan.outputs.android) }}
     steps:
+      - name: Target ${{ matrix.target.package }}
+        env:
+          TARGET: ${{ toJSON(matrix.target) }}
+        run: echo "$TARGET"
+
       - uses: actions/checkout@v7
         with:
           repository: ravitejakamalapuram/release-platform
@@ -383,14 +424,8 @@ jobs:
           fi
           mkdir -p "$OUT_DIR"
           cp "$AAB" "$OUT_DIR/$NAME.aab"
-          if [ -n "$NOTES_FILE" ] && [ -f "$NOTES_FILE" ]; then source="$NOTES_FILE"; else source="$RUNNER_TEMP/notes/notes.md"; fi
-          node --input-type=module -e "
-            import { readFileSync, writeFileSync } from 'node:fs';
-            import { playNotes } from '$GITHUB_WORKSPACE/platform/scripts/changelog.mjs';
-            writeFileSync(process.argv[2], playNotes(readFileSync(process.argv[1], 'utf8')));
-          " "$source" "$OUT_DIR/$NAME.whatsnew.txt"
-          echo "What's new ($source):"
-          cat "$OUT_DIR/$NAME.whatsnew.txt"
+          node "$GITHUB_WORKSPACE/platform/scripts/changelog.mjs" --changelog "$NOTES_FILE" \
+            --generated "$RUNNER_TEMP/notes/notes.md" --out "$OUT_DIR/$NAME.whatsnew.txt"
 
       - name: Remove upload key
         if: always()
@@ -405,7 +440,7 @@ jobs:
   # Holds id-token: runs ONLY release-platform scripts on downloaded artifacts. Never check out
   # or execute app code here (no npm ci, no gradle, no build/test commands).
   publish-chrome:
-    name: Publish chrome (${{ matrix.target.item_id }})
+    name: Publish chrome
     needs: [plan, build-chrome, build-android]
     # Publish only once EVERY target has built, so a broken Android build never leaves a
     # half-released version on the Chrome Web Store.
@@ -420,6 +455,11 @@ jobs:
       matrix:
         target: ${{ fromJSON(needs.plan.outputs.chrome) }}
     steps:
+      - name: Target ${{ matrix.target.item_id }}
+        env:
+          TARGET: ${{ toJSON(matrix.target) }}
+        run: echo "$TARGET"
+
       - uses: actions/checkout@v7
         with:
           repository: ravitejakamalapuram/release-platform
@@ -500,7 +540,7 @@ jobs:
 
   # Holds id-token: platform scripts + downloaded artifacts only (see publish-chrome).
   publish-android:
-    name: Publish android (${{ matrix.target.package }})
+    name: Publish android
     needs: [plan, build-chrome, build-android]
     if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && needs.plan.outputs.android != '[]' }}
     runs-on: ubuntu-latest
@@ -513,6 +553,11 @@ jobs:
       matrix:
         target: ${{ fromJSON(needs.plan.outputs.android) }}
     steps:
+      - name: Target ${{ matrix.target.package }}
+        env:
+          TARGET: ${{ toJSON(matrix.target) }}
+        run: echo "$TARGET"
+
       - uses: actions/checkout@v7
         with:
           repository: ravitejakamalapuram/release-platform

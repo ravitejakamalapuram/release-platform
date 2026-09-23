@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  checkConfig, chromeVersionCandidates, detectBaseline, versionFromFile, normalizeTarget, parseTargetFilter, planTargets, toSemver, versionFromGradle, versionFromPubspec,
+  checkConfig, chromeVersionCandidates, testToolchain, detectBaseline, versionFromFile, normalizeTarget, parseTargetFilter, planTargets, toSemver, versionFromGradle, versionFromPubspec,
 } from '../scripts/validate.mjs';
 
 const chrome = { type: 'chrome', item_id: 'jndhbmaokpclbpjoogffaimahadpidcf', path: 'extension' };
@@ -167,4 +167,10 @@ test('schema accepts e2e, e2e_in_release and version_file', () => {
   checkConfig({ app: 'x', e2e: 'npx playwright test', e2e_in_release: true, version_file: 'apps/extension/manifest.json', targets: [chrome] });
   invalid({ app: 'x', e2e_in_release: 'yes', targets: [chrome] }, /e2e_in_release: must be boolean/);
   invalid({ app: 'x', version_file: '../x', targets: [chrome] }, /version_file: must match/);
+});
+
+test('testToolchain derives node/java/flutter for the test gate from all targets', () => {
+  assert.deepEqual(testToolchain({ targets: [chrome] }), { node: '22', java: '', flutter: '' });
+  assert.deepEqual(testToolchain({ targets: [{ ...chrome, node: '20' }, { ...android, java: '21' }] }), { node: '20', java: '21', flutter: '' });
+  assert.deepEqual(testToolchain({ targets: [android, { ...android, package: 'com.b.c', flutter: '3.24.5' }] }), { node: '22', java: '17', flutter: '3.24.5' });
 });

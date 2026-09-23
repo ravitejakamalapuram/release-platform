@@ -97,6 +97,37 @@ jobs:
           yq -o=json '.' release.yaml > "$RUNNER_TEMP/release.json"
           node "$GITHUB_WORKSPACE/platform/scripts/validate.mjs" --config "$RUNNER_TEMP/release.json" --repo . --targets "$TARGETS"
 
+      - name: Node for the test gate
+        if: steps.config.outputs.node != '22'
+        uses: actions/setup-node@v7
+        with:
+          package-manager-cache: false
+          node-version: ${{ steps.config.outputs.node }}
+
+      # Android/Flutter repos: install the toolchain the tests need instead of relying on
+      # whatever the runner image happens to preinstall.
+      - name: Java for the test gate
+        if: steps.config.outputs.java != ''
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: ${{ steps.config.outputs.java }}
+
+      - name: Android SDK for the test gate
+        if: steps.config.outputs.java != ''
+        uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+
+      - name: Flutter for the test gate
+        if: steps.config.outputs.flutter != ''
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ steps.config.outputs.flutter }}
+          channel: stable
+          cache: true
+
       - name: Test gate
         if: steps.config.outputs.test != ''
         working-directory: app/${{ inputs.directory }}
@@ -117,7 +148,7 @@ jobs:
         run: bash -euo pipefail -c "$E2E_COMMAND"
 
   chrome:
-    name: Build chrome (${{ matrix.target.item_id }})
+    name: Build chrome
     needs: plan
     if: needs.plan.outputs.chrome != '[]'
     runs-on: ubuntu-latest
@@ -129,6 +160,11 @@ jobs:
       matrix:
         target: ${{ fromJSON(needs.plan.outputs.chrome) }}
     steps:
+      - name: Target ${{ matrix.target.item_id }}
+        env:
+          TARGET: ${{ toJSON(matrix.target) }}
+        run: echo "$TARGET"
+
       - uses: actions/checkout@v7
         with:
           repository: ravitejakamalapuram/release-platform
@@ -180,7 +216,7 @@ jobs:
           if-no-files-found: error
 
   android:
-    name: Build android (${{ matrix.target.package }})
+    name: Build android
     needs: plan
     if: needs.plan.outputs.android != '[]'
     runs-on: ubuntu-latest
@@ -192,6 +228,11 @@ jobs:
       matrix:
         target: ${{ fromJSON(needs.plan.outputs.android) }}
     steps:
+      - name: Target ${{ matrix.target.package }}
+        env:
+          TARGET: ${{ toJSON(matrix.target) }}
+        run: echo "$TARGET"
+
       - uses: actions/checkout@v7
         with:
           path: app

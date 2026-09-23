@@ -284,7 +284,10 @@ async function cli() {
     }
     case 'preflight': {
       if (!values['version-code']) throw new Error('--version-code is required');
-      const { highest } = await preflight({ pkg, token, versionCode: values['version-code'] });
+      // Opens an edit (proves release-bot can access the app), lists tracks, deletes the edit.
+      const { highest, tracks } = await preflight({ pkg, token, versionCode: values['version-code'] });
+      log(`Access OK: opened and discarded an edit for ${pkg}`);
+      for (const line of describeTracks(tracks)) log(`  ${line}`);
       out = `PREFLIGHT_OK: versionCode ${values['version-code']} > ${highest.code}${highest.track ? ` (highest, on ${highest.track})` : ' (no releases yet)'}`;
       break;
     }
