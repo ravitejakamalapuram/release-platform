@@ -4,7 +4,8 @@
 //   yq -o=json . release.yaml > release.json
 //   node scripts/validate.mjs --config release.json --repo . --targets chrome
 //
-// Outputs: app, test, e2e, e2e_in_release, chrome (JSON array), android (JSON array), baseline.
+// Outputs: app, test, e2e, e2e_in_release, chrome (JSON array), android (JSON array), baseline,
+// node/java/flutter (toolchain for the test gate).
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
@@ -89,6 +90,30 @@ export function planTargets(config, filter) {
   return {
     chrome: selected.filter((t) => t.type === 'chrome'),
     android: selected.filter((t) => t.type === 'android'),
+  };
+}
+
+/**
+ * Toolchains the test gate needs, from ALL targets (not just the filtered ones): the repo's tests
+ * may compile Android code even when only the chrome target is being released.
+ */
+export function testToolchain(config) {
+  const all = config.targets.map(normalizeTarget);
+  const android = all.filter((t) => t.type === 'android');
+  const chrome = all.filter((t) => t.type === 'chrome');
+  return {
+    node: chrome[0]?.node ?? '22',
+    java: android[0]?.java ?? '',
+    flutter: android.find((t) => t.flutter)?.flutter ?? '',
+  };
+}
+
+export function matrixIds(plan) {
+  return {
+    chrome_ids: plan.chrome.map((t) => t.item_id),
+    chrome_targets: Object.fromEntries(plan.chrome.map((t) => [t.item_id, t])),
+    android_ids: plan.android.map((t) => t.package),
+    android_targets: Object.fromEntries(plan.android.map((t) => [t.package, t])),
   };
 }
 
@@ -201,7 +226,18 @@ async function cli() {
   setOutput('e2e_in_release', String(config.e2e_in_release ?? false));
   setOutput('chrome', JSON.stringify(plan.chrome));
   setOutput('android', JSON.stringify(plan.android));
+  // Matrices run over plain ids (so GitHub's job names read "Build chrome (<id>)"); jobs look the
+  // full target up by id.
+  const ids = matrixIds(plan);
+  setOutput('chrome_ids', JSON.stringify(ids.chrome_ids));
+  setOutput('chrome_targets', JSON.stringify(ids.chrome_targets));
+  setOutput('android_ids', JSON.stringify(ids.android_ids));
+  setOutput('android_targets', JSON.stringify(ids.android_targets));
   setOutput('baseline', baseline?.version ?? '');
+  const tools = testToolchain(config);
+  setOutput('node', tools.node);
+  setOutput('java', tools.java);
+  setOutput('flutter', tools.flutter);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) main(cli);

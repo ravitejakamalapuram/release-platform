@@ -111,6 +111,10 @@ jobs:
       e2e: ${{ steps.config.outputs.e2e_in_release == 'true' && steps.config.outputs.e2e || '' }}
       chrome: ${{ steps.config.outputs.chrome }}
       android: ${{ steps.config.outputs.android }}
+      chrome_ids: ${{ steps.config.outputs.chrome_ids }}
+      chrome_targets: ${{ steps.config.outputs.chrome_targets }}
+      android_ids: ${{ steps.config.outputs.android_ids }}
+      android_targets: ${{ steps.config.outputs.android_targets }}
       version: ${{ steps.version.outputs.version }}
       version_code: ${{ steps.version.outputs.version_code }}
       tag: ${{ steps.version.outputs.tag }}
@@ -149,6 +153,37 @@ jobs:
           fi
           yq -o=json '.' release.yaml > "$RUNNER_TEMP/release.json"
           node "$GITHUB_WORKSPACE/platform/scripts/validate.mjs" --config "$RUNNER_TEMP/release.json" --repo . --targets "$TARGETS"
+
+      - name: Node for the test gate
+        if: steps.config.outputs.node != '22'
+        uses: actions/setup-node@v7
+        with:
+          package-manager-cache: false
+          node-version: ${{ steps.config.outputs.node }}
+
+      # Android/Flutter repos: install the toolchain the tests need instead of relying on
+      # whatever the runner image happens to preinstall.
+      - name: Java for the test gate
+        if: steps.config.outputs.java != ''
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: ${{ steps.config.outputs.java }}
+
+      - name: Android SDK for the test gate
+        if: steps.config.outputs.java != ''
+        uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+
+      - name: Flutter for the test gate
+        if: steps.config.outputs.flutter != ''
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ steps.config.outputs.flutter }}
+          channel: stable
+          cache: true
 
       - name: Test gate
         if: steps.config.outputs.test != ''
@@ -190,7 +225,7 @@ jobs:
 
   # Runs app code -> no id-token, no secrets.
   build-chrome:
-    name: Build chrome (${{ matrix.target.item_id }})
+    name: Build chrome
     needs: plan
     if: needs.plan.outputs.chrome != '[]'
     runs-on: ubuntu-latest
@@ -200,8 +235,24 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        target: ${{ fromJSON(needs.plan.outputs.chrome) }}
+        id: ${{ fromJSON(needs.plan.outputs.chrome_ids) }}
     steps:
+      - name: Target ${{ matrix.id }}
+        id: target
+        env:
+          TARGET: ${{ toJSON(fromJSON(needs.plan.outputs.chrome_targets)[matrix.id]) }}
+        run: |
+          # One output per field; nested/array values as JSON, multi-line safe.
+          while IFS= read -r k; do
+            v=$(jq -r --arg k "$k" '.[$k] | if type == "string" then . else tojson end' <<<"$TARGET")
+            d="EOF_${RANDOM}${RANDOM}"
+            printf '%s<<%s\n%s\n%s\n' "$k" "$d" "$v" "$d" >> "$GITHUB_OUTPUT"
+          done < <(jq -r 'keys[]' <<<"$TARGET")
+          # Flatten signing secret names (Android): signing_keystore_base64, ...
+          jq -r '(.signing // {}) | to_entries[] | "signing_\(.key)=\(.value)"' <<<"$TARGET" >> "$GITHUB_OUTPUT"
+          echo "signing_names=$(jq -r '(.signing // {}) | [.[]] | join(", ")' <<<"$TARGET")" >> "$GITHUB_OUTPUT"
+          jq . <<<"$TARGET"
+
       - uses: actions/checkout@v7
         with:
           repository: ravitejakamalapuram/release-platform
@@ -218,13 +269,13 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           package-manager-cache: false
-          node-version: ${{ matrix.target.node }}
+          node-version: ${{ steps.target.outputs.node }}
 
       - name: Build
-        if: matrix.target.build != ''
+        if: steps.target.outputs.build != ''
         working-directory: app/${{ inputs.directory }}
         env:
-          BUILD_COMMAND: ${{ matrix.target.build }}
+          BUILD_COMMAND: ${{ steps.target.outputs.build }}
           VERSION_NAME: ${{ needs.plan.outputs.version }}
         run: bash -euo pipefail -c "$BUILD_COMMAND"
 
@@ -233,28 +284,28 @@ jobs:
         working-directory: app/${{ inputs.directory }}
         env:
           E2E_COMMAND: ${{ needs.plan.outputs.e2e }}
-          EXT_PATH: ${{ matrix.target.path }}
+          EXT_PATH: ${{ steps.target.outputs.path }}
         run: |
           EXTENSION_DIR="$(cd "$EXT_PATH" && pwd)" bash -euo pipefail -c "$E2E_COMMAND"
 
       - name: Package
         working-directory: app/${{ inputs.directory }}
         env:
-          EXT_DIR: ${{ matrix.target.path }}
-          INCLUDE: ${{ toJSON(matrix.target.include) }}
+          EXT_DIR: ${{ steps.target.outputs.path }}
+          INCLUDE: ${{ steps.target.outputs.include }}
           VERSION: ${{ needs.plan.outputs.version }}
           OUT: ${{ github.workspace }}/dist/${{ needs.plan.outputs.app }}-${{ needs.plan.outputs.version }}-chrome.zip
         run: node "$GITHUB_WORKSPACE/platform/scripts/package-chrome.mjs" --dir "$EXT_DIR" --version "$VERSION" --out "$OUT" --include "$INCLUDE"
 
       - uses: actions/upload-artifact@v7
         with:
-          name: pkg-${{ matrix.target.key }}
+          name: pkg-${{ steps.target.outputs.key }}
           path: dist/
           if-no-files-found: error
 
   # Runs app code -> no id-token. Only the upload-key secrets are exposed here.
   build-android:
-    name: Build android (${{ matrix.target.package }})
+    name: Build android
     needs: plan
     if: needs.plan.outputs.android != '[]'
     runs-on: ubuntu-latest
@@ -264,8 +315,24 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        target: ${{ fromJSON(needs.plan.outputs.android) }}
+        id: ${{ fromJSON(needs.plan.outputs.android_ids) }}
     steps:
+      - name: Target ${{ matrix.id }}
+        id: target
+        env:
+          TARGET: ${{ toJSON(fromJSON(needs.plan.outputs.android_targets)[matrix.id]) }}
+        run: |
+          # One output per field; nested/array values as JSON, multi-line safe.
+          while IFS= read -r k; do
+            v=$(jq -r --arg k "$k" '.[$k] | if type == "string" then . else tojson end' <<<"$TARGET")
+            d="EOF_${RANDOM}${RANDOM}"
+            printf '%s<<%s\n%s\n%s\n' "$k" "$d" "$v" "$d" >> "$GITHUB_OUTPUT"
+          done < <(jq -r 'keys[]' <<<"$TARGET")
+          # Flatten signing secret names (Android): signing_keystore_base64, ...
+          jq -r '(.signing // {}) | to_entries[] | "signing_\(.key)=\(.value)"' <<<"$TARGET" >> "$GITHUB_OUTPUT"
+          echo "signing_names=$(jq -r '(.signing // {}) | [.[]] | join(", ")' <<<"$TARGET")" >> "$GITHUB_OUTPUT"
+          jq . <<<"$TARGET"
+
       - uses: actions/checkout@v7
         with:
           repository: ravitejakamalapuram/release-platform
@@ -292,7 +359,7 @@ jobs:
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
-          java-version: ${{ matrix.target.java }}
+          java-version: ${{ steps.target.outputs.java }}
 
       # Installs cmdline-tools and accepts licenses. Only platform-tools is requested: the legacy
       # "tools" package (this action's historical default) no longer exists. AGP downloads the
@@ -303,20 +370,20 @@ jobs:
           log-accepted-android-sdk-licenses: false
 
       - uses: subosito/flutter-action@v2
-        if: matrix.target.flutter != ''
+        if: steps.target.outputs.flutter != ''
         with:
-          flutter-version: ${{ matrix.target.flutter }}
+          flutter-version: ${{ steps.target.outputs.flutter }}
           channel: stable
           cache: true
 
       - name: Prepare upload key
         id: keystore
         env:
-          KEYSTORE_BASE64: ${{ secrets[matrix.target.signing.keystore_base64] }}
-          KEYSTORE_PASSWORD: ${{ secrets[matrix.target.signing.keystore_password] }}
-          KEY_ALIAS: ${{ secrets[matrix.target.signing.key_alias] }}
-          KEY_PASSWORD: ${{ secrets[matrix.target.signing.key_password] }}
-          NAMES: ${{ join(matrix.target.signing.*, ', ') }}
+          KEYSTORE_BASE64: ${{ secrets[steps.target.outputs.signing_keystore_base64] }}
+          KEYSTORE_PASSWORD: ${{ secrets[steps.target.outputs.signing_keystore_password] }}
+          KEY_ALIAS: ${{ secrets[steps.target.outputs.signing_key_alias] }}
+          KEY_PASSWORD: ${{ secrets[steps.target.outputs.signing_key_password] }}
+          NAMES: ${{ steps.target.outputs.signing_names }}
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
           if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEYSTORE_PASSWORD" ] || [ -z "$KEY_ALIAS" ] || [ -z "$KEY_PASSWORD" ]; then
@@ -350,17 +417,17 @@ jobs:
         env:
           VERSION_NAME: ${{ needs.plan.outputs.version }}
           VERSION_CODE: ${{ needs.plan.outputs.version_code }}
-          BUILD_COMMAND: ${{ matrix.target.build }}
-          GRADLE_TASK: ${{ matrix.target.gradle_task }}
+          BUILD_COMMAND: ${{ steps.target.outputs.build }}
+          GRADLE_TASK: ${{ steps.target.outputs.gradle_task }}
           # Conventional env names for apps whose Gradle reads signing from the environment.
           RELEASE_KEYSTORE_FILE: ${{ steps.keystore.outputs.file }}
-          RELEASE_KEYSTORE_PASSWORD: ${{ secrets[matrix.target.signing.keystore_password] }}
-          RELEASE_KEY_ALIAS: ${{ secrets[matrix.target.signing.key_alias] }}
-          RELEASE_KEY_PASSWORD: ${{ secrets[matrix.target.signing.key_password] }}
+          RELEASE_KEYSTORE_PASSWORD: ${{ secrets[steps.target.outputs.signing_keystore_password] }}
+          RELEASE_KEY_ALIAS: ${{ secrets[steps.target.outputs.signing_key_alias] }}
+          RELEASE_KEY_PASSWORD: ${{ secrets[steps.target.outputs.signing_key_password] }}
           KEYSTORE_FILE: ${{ steps.keystore.outputs.file }}
-          KEYSTORE_PASSWORD: ${{ secrets[matrix.target.signing.keystore_password] }}
-          KEY_ALIAS: ${{ secrets[matrix.target.signing.key_alias] }}
-          KEY_PASSWORD: ${{ secrets[matrix.target.signing.key_password] }}
+          KEYSTORE_PASSWORD: ${{ secrets[steps.target.outputs.signing_keystore_password] }}
+          KEY_ALIAS: ${{ secrets[steps.target.outputs.signing_key_alias] }}
+          KEY_PASSWORD: ${{ secrets[steps.target.outputs.signing_key_password] }}
         run: |
           if [ -n "$BUILD_COMMAND" ]; then
             bash -euo pipefail -c "$BUILD_COMMAND"
@@ -372,10 +439,10 @@ jobs:
       - name: Collect bundle and release notes
         working-directory: app/${{ inputs.directory }}
         env:
-          AAB: ${{ matrix.target.aab }}
-          NOTES_FILE: ${{ matrix.target.release_notes }}
+          AAB: ${{ steps.target.outputs.aab }}
+          NOTES_FILE: ${{ steps.target.outputs.release_notes }}
           OUT_DIR: ${{ github.workspace }}/dist
-          NAME: ${{ needs.plan.outputs.app }}-${{ needs.plan.outputs.version }}-${{ matrix.target.package }}
+          NAME: ${{ needs.plan.outputs.app }}-${{ needs.plan.outputs.version }}-${{ steps.target.outputs.package }}
         run: |
           if [ ! -f "$AAB" ]; then
             echo "::error::Bundle not found at '$AAB'. Set 'aab' on the android target to the path your build produces."
@@ -383,14 +450,8 @@ jobs:
           fi
           mkdir -p "$OUT_DIR"
           cp "$AAB" "$OUT_DIR/$NAME.aab"
-          if [ -n "$NOTES_FILE" ] && [ -f "$NOTES_FILE" ]; then source="$NOTES_FILE"; else source="$RUNNER_TEMP/notes/notes.md"; fi
-          node --input-type=module -e "
-            import { readFileSync, writeFileSync } from 'node:fs';
-            import { playNotes } from '$GITHUB_WORKSPACE/platform/scripts/changelog.mjs';
-            writeFileSync(process.argv[2], playNotes(readFileSync(process.argv[1], 'utf8')));
-          " "$source" "$OUT_DIR/$NAME.whatsnew.txt"
-          echo "What's new ($source):"
-          cat "$OUT_DIR/$NAME.whatsnew.txt"
+          node "$GITHUB_WORKSPACE/platform/scripts/changelog.mjs" --changelog "$NOTES_FILE" \
+            --generated "$RUNNER_TEMP/notes/notes.md" --out "$OUT_DIR/$NAME.whatsnew.txt"
 
       - name: Remove upload key
         if: always()
@@ -398,14 +459,14 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: pkg-${{ matrix.target.key }}
+          name: pkg-${{ steps.target.outputs.key }}
           path: dist/
           if-no-files-found: error
 
   # Holds id-token: runs ONLY release-platform scripts on downloaded artifacts. Never check out
   # or execute app code here (no npm ci, no gradle, no build/test commands).
   publish-chrome:
-    name: Publish chrome (${{ matrix.target.item_id }})
+    name: Publish chrome
     needs: [plan, build-chrome, build-android]
     # Publish only once EVERY target has built, so a broken Android build never leaves a
     # half-released version on the Chrome Web Store.
@@ -418,8 +479,24 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: ${{ fromJSON(needs.plan.outputs.chrome) }}
+        id: ${{ fromJSON(needs.plan.outputs.chrome_ids) }}
     steps:
+      - name: Target ${{ matrix.id }}
+        id: target
+        env:
+          TARGET: ${{ toJSON(fromJSON(needs.plan.outputs.chrome_targets)[matrix.id]) }}
+        run: |
+          # One output per field; nested/array values as JSON, multi-line safe.
+          while IFS= read -r k; do
+            v=$(jq -r --arg k "$k" '.[$k] | if type == "string" then . else tojson end' <<<"$TARGET")
+            d="EOF_${RANDOM}${RANDOM}"
+            printf '%s<<%s\n%s\n%s\n' "$k" "$d" "$v" "$d" >> "$GITHUB_OUTPUT"
+          done < <(jq -r 'keys[]' <<<"$TARGET")
+          # Flatten signing secret names (Android): signing_keystore_base64, ...
+          jq -r '(.signing // {}) | to_entries[] | "signing_\(.key)=\(.value)"' <<<"$TARGET" >> "$GITHUB_OUTPUT"
+          echo "signing_names=$(jq -r '(.signing // {}) | [.[]] | join(", ")' <<<"$TARGET")" >> "$GITHUB_OUTPUT"
+          jq . <<<"$TARGET"
+
       - uses: actions/checkout@v7
         with:
           repository: ravitejakamalapuram/release-platform
@@ -429,7 +506,7 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
-          name: pkg-${{ matrix.target.key }}
+          name: pkg-${{ steps.target.outputs.key }}
           path: dist
 
       - uses: actions/setup-node@v7
@@ -452,7 +529,7 @@ jobs:
         if: ${{ inputs.dry_run && inputs.store_preflight }}
         env:
           GOOGLE_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
-          ITEM: ${{ matrix.target.item_id }}
+          ITEM: ${{ steps.target.outputs.item_id }}
           VERSION: ${{ needs.plan.outputs.version }}
         run: node platform/scripts/cws.mjs preflight --item "$ITEM" --version "$VERSION"
 
@@ -461,9 +538,9 @@ jobs:
         if: ${{ !inputs.dry_run }}
         env:
           GOOGLE_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
-          ITEM: ${{ matrix.target.item_id }}
+          ITEM: ${{ steps.target.outputs.item_id }}
           VERSION: ${{ needs.plan.outputs.version }}
-          SUBMIT: ${{ matrix.target.publish }}
+          SUBMIT: ${{ steps.target.outputs.publish }}
         run: |
           args=(release --item "$ITEM" --zip "$(ls dist/*.zip)" --version "$VERSION")
           if [ "$SUBMIT" != "true" ]; then args+=(--no-publish); fi
@@ -472,7 +549,7 @@ jobs:
       - name: Record result
         if: always()
         env:
-          KEY: ${{ matrix.target.key }}
+          KEY: ${{ steps.target.outputs.key }}
           DRY_RUN: ${{ inputs.dry_run }}
           STORE_PREFLIGHT: ${{ inputs.store_preflight }}
           PREFLIGHT: ${{ steps.preflight.outcome }}
@@ -495,12 +572,12 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: result-${{ matrix.target.key }}
+          name: result-${{ steps.target.outputs.key }}
           path: results/
 
   # Holds id-token: platform scripts + downloaded artifacts only (see publish-chrome).
   publish-android:
-    name: Publish android (${{ matrix.target.package }})
+    name: Publish android
     needs: [plan, build-chrome, build-android]
     if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && needs.plan.outputs.android != '[]' }}
     runs-on: ubuntu-latest
@@ -511,8 +588,24 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: ${{ fromJSON(needs.plan.outputs.android) }}
+        id: ${{ fromJSON(needs.plan.outputs.android_ids) }}
     steps:
+      - name: Target ${{ matrix.id }}
+        id: target
+        env:
+          TARGET: ${{ toJSON(fromJSON(needs.plan.outputs.android_targets)[matrix.id]) }}
+        run: |
+          # One output per field; nested/array values as JSON, multi-line safe.
+          while IFS= read -r k; do
+            v=$(jq -r --arg k "$k" '.[$k] | if type == "string" then . else tojson end' <<<"$TARGET")
+            d="EOF_${RANDOM}${RANDOM}"
+            printf '%s<<%s\n%s\n%s\n' "$k" "$d" "$v" "$d" >> "$GITHUB_OUTPUT"
+          done < <(jq -r 'keys[]' <<<"$TARGET")
+          # Flatten signing secret names (Android): signing_keystore_base64, ...
+          jq -r '(.signing // {}) | to_entries[] | "signing_\(.key)=\(.value)"' <<<"$TARGET" >> "$GITHUB_OUTPUT"
+          echo "signing_names=$(jq -r '(.signing // {}) | [.[]] | join(", ")' <<<"$TARGET")" >> "$GITHUB_OUTPUT"
+          jq . <<<"$TARGET"
+
       - uses: actions/checkout@v7
         with:
           repository: ravitejakamalapuram/release-platform
@@ -522,7 +615,7 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
-          name: pkg-${{ matrix.target.key }}
+          name: pkg-${{ steps.target.outputs.key }}
           path: dist
 
       - uses: actions/setup-node@v7
@@ -545,7 +638,7 @@ jobs:
         if: ${{ inputs.dry_run && inputs.store_preflight }}
         env:
           GOOGLE_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
-          PACKAGE: ${{ matrix.target.package }}
+          PACKAGE: ${{ steps.target.outputs.package }}
           VERSION_CODE: ${{ needs.plan.outputs.version_code }}
         run: node platform/scripts/play.mjs preflight --package "$PACKAGE" --version-code "$VERSION_CODE"
 
@@ -554,9 +647,9 @@ jobs:
         if: ${{ !inputs.dry_run }}
         env:
           GOOGLE_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
-          PACKAGE: ${{ matrix.target.package }}
-          TRACK: ${{ matrix.target.track }}
-          STATUS: ${{ matrix.target.release_status }}
+          PACKAGE: ${{ steps.target.outputs.package }}
+          TRACK: ${{ steps.target.outputs.track }}
+          STATUS: ${{ steps.target.outputs.release_status }}
           VERSION: ${{ needs.plan.outputs.version }}
           VERSION_CODE: ${{ needs.plan.outputs.version_code }}
         run: |
@@ -567,7 +660,7 @@ jobs:
       - name: Record result
         if: always()
         env:
-          KEY: ${{ matrix.target.key }}
+          KEY: ${{ steps.target.outputs.key }}
           DRY_RUN: ${{ inputs.dry_run }}
           STORE_PREFLIGHT: ${{ inputs.store_preflight }}
           PREFLIGHT: ${{ steps.preflight.outcome }}
@@ -590,7 +683,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: result-${{ matrix.target.key }}
+          name: result-${{ steps.target.outputs.key }}
           path: results/
 
   release:
