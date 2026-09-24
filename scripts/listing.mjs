@@ -43,7 +43,9 @@ const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg']);
 /** Width/height of a PNG or JPEG from its bytes, or null if it is neither. */
 export function imageSize(buf) {
   if (buf.length >= 24 && buf.readUInt32BE(0) === 0x89504e47 && buf.toString('ascii', 12, 16) === 'IHDR') {
-    return { type: 'png', width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+    // Colour types 4 (grey + alpha) and 6 (RGBA), or a tRNS chunk, mean transparency.
+    const alpha = buf.length > 25 && (buf[25] === 4 || buf[25] === 6 || buf.includes('tRNS'));
+    return { type: 'png', width: buf.readUInt32BE(16), height: buf.readUInt32BE(20), alpha };
   }
   if (buf.length >= 4 && buf[0] === 0xff && buf[1] === 0xd8) {
     let i = 2;
@@ -53,7 +55,7 @@ export function imageSize(buf) {
       const len = buf.readUInt16BE(i + 2);
       // SOF0..SOF15 except DHT (C4), JPG (C8) and DAC (CC) carry the frame size.
       if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)) {
-        return { type: 'jpeg', height: buf.readUInt16BE(i + 5), width: buf.readUInt16BE(i + 7) };
+        return { type: 'jpeg', height: buf.readUInt16BE(i + 5), width: buf.readUInt16BE(i + 7), alpha: false };
       }
       i += 2 + len;
     }
@@ -129,6 +131,7 @@ export function checkChromeListing(listing) {
     if (!sizes.some(([w, h]) => image.width === w && image.height === h)) {
       errors.push(`screenshots[${i}] is ${image.width}x${image.height}; the store accepts ${sizes.map(fmt).join(' or ')} (${basename(p)})`);
     }
+    if (image.alpha) errors.push(`screenshots[${i}] has transparency; the store takes JPEG or 24-bit PNG without alpha (${basename(p)})`);
     images.screenshots.push(image);
   });
 
@@ -144,6 +147,7 @@ export function checkChromeListing(listing) {
       continue;
     }
     if (image.width !== want[0] || image.height !== want[1]) errors.push(`promotionalImages.${key} is ${image.width}x${image.height}; expected ${fmt(want)}`);
+    if (image.alpha) errors.push(`promotionalImages.${key} has transparency; the store takes JPEG or 24-bit PNG without alpha`);
     images.promo[key] = image;
   }
   if (!listing.promo.smallTile) warnings.push('promotionalImages.smallTile (440x280) is missing; the store shows a generic tile without it');
@@ -218,6 +222,7 @@ export function checkPlayListing(listing) {
           errors.push(at(`${type} is ${image.width}x${image.height}; expected ${fmt(exact)}`));
         }
         if (type === 'icon' && image.type !== 'png') errors.push(at('icon must be a PNG'));
+        if (type !== 'icon' && image.alpha) errors.push(at(`${type}[${i}] has transparency; Play takes JPEG or 24-bit PNG without alpha`));
         if (PLAY_RULES.screenshots[type]) {
           const lo = Math.min(image.width, image.height);
           const hi = Math.max(image.width, image.height);
