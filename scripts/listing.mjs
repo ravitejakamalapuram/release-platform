@@ -409,6 +409,46 @@ export function syncChromeIssue({ manifest, repo, runUrl = '', dryRun = false, g
   return { ...plan, url, result: `LISTING_ISSUE_OPENED: ${url}` };
 }
 
+export const VIDEO_LABEL = 'demo-video';
+export const VIDEO_TITLE = 'Demo video needed for the Chrome Web Store listing';
+
+export function videoIssueBody(manifest) {
+  return [
+    `<!-- demo-video-checkpoint: ${manifest.item_id} -->`,
+    'This item has no promo video. `chrome-store/store.config.json` has no `promoVideo`. A short demo',
+    'raises store conversion, and first-time publishes should not go out without one.',
+    '',
+    '### Steps',
+    '1. **Agents** (this issue is labelled `agent-ready`, so the intake hands it to Paperclip): the Demo',
+    '   Producer records a 20-30 s demo of the real product with a voice-over and attaches the MP4.',
+    '2. **Board:** upload the MP4 to YouTube as **Unlisted** (the store only accepts YouTube links).',
+    '3. Set `"promoVideo": "https://youtu.be/<id>"` in `chrome-store/store.config.json` in a PR whose body says',
+    '   `Fixes #<this issue>`. The next listing run carries it into the listing, and closes this issue if it is',
+    '   still open.',
+  ].join('\n');
+}
+
+/**
+ * Demo-video checkpoint: without a promoVideo, open one `demo-video` issue (labelled agent-ready so the
+ * agent company makes the video); with one, close any open checkpoint issue.
+ */
+export function syncVideoIssue({ manifest, repo, dryRun = false, gh = defaultGh }) {
+  const open = JSON.parse(gh(['issue', 'list', '--repo', repo, '--state', 'open', '--label', VIDEO_LABEL, '--limit', '20', '--json', 'number,body']))
+    .filter((i) => (i.body ?? '').includes(`demo-video-checkpoint: ${manifest.item_id}`));
+  if (manifest.text?.promoVideo) {
+    if (!open.length) return { action: 'none', result: 'DEMO_VIDEO_OK: promoVideo is set' };
+    if (dryRun) return { action: 'close', result: `DEMO_VIDEO_OK (dry run): would close #${open.map((i) => i.number).join(', #')}` };
+    for (const i of open) gh(['issue', 'close', String(i.number), '--repo', repo, '--comment', `promoVideo is set (${manifest.text.promoVideo}); closing.`]);
+    return { action: 'close', result: `DEMO_VIDEO_OK: closed #${open.map((i) => i.number).join(', #')}` };
+  }
+  if (open.length) return { action: 'skip', result: `DEMO_VIDEO_MISSING: already tracked in #${open[0].number}` };
+  if (dryRun) return { action: 'create', result: `DEMO_VIDEO_MISSING (dry run): would open "${VIDEO_TITLE}"` };
+  gh(['label', 'create', VIDEO_LABEL, '--repo', repo, '--color', 'fbca04', '--description', 'The store listing needs a demo video', '--force']);
+  gh(['label', 'create', 'agent-ready', '--repo', repo, '--color', '0e8a16', '--description', 'Board-approved for the agent team to pick up', '--force']);
+  const url = gh(['issue', 'create', '--repo', repo, '--title', VIDEO_TITLE, '--label', VIDEO_LABEL, '--label', 'agent-ready', '--body', videoIssueBody(manifest)]).trim();
+  return { action: 'create', url, result: `DEMO_VIDEO_MISSING: opened ${url}` };
+}
+
 function report(results, repo) {
   let failed = false;
   const rows = [];
@@ -444,7 +484,10 @@ async function cli() {
     const { result } = syncChromeIssue({ manifest, repo: values['github-repo'], runUrl: values['run-url'], dryRun: values['dry-run'] });
     log(result);
     setOutput('result', result);
-    summary(`### Chrome listing\n\n${result}\n\n${chromeChecklist(manifest, values['run-url'])}`);
+    const video = syncVideoIssue({ manifest, repo: values['github-repo'], dryRun: values['dry-run'] });
+    log(video.result);
+    if (video.action === 'create' || video.action === 'skip') warning(video.result);
+    summary(`### Chrome listing\n\n${result}\n\n${video.result}\n\n${chromeChecklist(manifest, values['run-url'])}`);
     return;
   }
   const config = JSON.parse(readFileSync(values.config, 'utf8'));
