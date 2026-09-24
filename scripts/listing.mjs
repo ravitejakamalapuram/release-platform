@@ -101,6 +101,7 @@ export function loadChromeListing(configPath) {
     privacyPolicyUrl: raw.privacyPolicyUrl ?? '',
     supportUrl: raw.supportUrl ?? '',
     websiteUrl: raw.websiteUrl ?? '',
+    promoVideo: raw.promoVideo ?? '',
     screenshots: (raw.screenshots ?? []).map((p) => resolve(base, p)),
     promo: Object.fromEntries(Object.entries(promo).map(([k, p]) => [k, resolve(base, p)])),
   };
@@ -119,6 +120,9 @@ export function checkChromeListing(listing) {
   else if (listing.description.length > CHROME_RULES.description) errors.push(`description is ${listing.description.length} characters (max ${CHROME_RULES.description})`);
   for (const key of ['privacyPolicyUrl', 'supportUrl', 'websiteUrl']) {
     if (listing[key] && !/^https:\/\//.test(listing[key])) errors.push(`${key} must be an https:// URL`);
+  }
+  if (listing.promoVideo && !/^https:\/\/(www\.)?(youtube\.com\/watch\?v=|youtu\.be\/)[\w-]{6,}/.test(listing.promoVideo)) {
+    errors.push('promoVideo must be a YouTube URL (https://www.youtube.com/watch?v=... or https://youtu.be/...)');
   }
 
   const { min, max, sizes } = CHROME_RULES.screenshots;
@@ -304,7 +308,7 @@ function chromeBundle(result, out) {
     copyFileSync(img.path, join(out, name));
     promo[key] = { file: name, width: img.width, height: img.height, sha256: img.sha256 };
   }
-  const text = { shortDescription: listing.shortDescription, description: listing.description, category: listing.category, language: listing.language, privacyPolicyUrl: listing.privacyPolicyUrl, supportUrl: listing.supportUrl, websiteUrl: listing.websiteUrl };
+  const text = { shortDescription: listing.shortDescription, description: listing.description, category: listing.category, language: listing.language, privacyPolicyUrl: listing.privacyPolicyUrl, supportUrl: listing.supportUrl, websiteUrl: listing.websiteUrl, promoVideo: listing.promoVideo };
   const fp = fingerprint({ text, screenshots: files, promo });
   const manifest = { type: 'chrome', item_id: target.item_id, publisher_id: listing.publisherId, fingerprint: fp, text, screenshots: files, promo };
   writeFileSync(join(out, 'listing.json'), `${JSON.stringify(manifest, null, 2)}\n`);
@@ -329,6 +333,7 @@ export function chromeChecklist(m, runUrl = '') {
     `2. **Screenshots:** remove the old ones, then upload in this order: ${m.screenshots.map((s) => `\`${basename(s.file)}\``).join(', ')}.`,
     ...Object.entries(m.promo).map(([k, v]) => `   - **${k}** (${v.width}×${v.height}): \`${v.file}\``),
     '3. **Short description** and **Detailed description:** replace with the text below if they differ.',
+    ...(m.text.promoVideo ? [`   - **Global promo video:** \`${m.text.promoVideo}\``] : []),
     '4. **Save draft**, then **Submit for review** (listing edits stay private until the review passes).',
     '5. Close this issue once submitted. A later change to the listing opens a new issue.',
     '',

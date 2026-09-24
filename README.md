@@ -346,7 +346,7 @@ targets:
                                                # full_description.txt, images/...
 ```
 
-`store.config.json` keys used: `shortDescription`, `description`, `screenshots` (list),
+`store.config.json` keys used: `shortDescription`, `description`, `screenshots` (list), `promoVideo` (a YouTube URL),
 `promotionalImages.smallTile` / `.marquee`, `privacyPolicyUrl`, `supportUrl`, `websiteUrl`,
 `publisherId` (for the dashboard link). The Android layout is the standard fastlane "supply" one:
 `images/icon.png`, `images/featureGraphic.png` and `images/phoneScreenshots/*.png` (plus

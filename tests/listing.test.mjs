@@ -109,6 +109,18 @@ test('chrome rules: screenshots with transparency are refused', () => {
   assert.ok(errors.some((e) => /screenshots\[0\] has transparency/.test(e)));
 });
 
+test('chrome promoVideo must be a YouTube URL and is carried into the checklist', () => {
+  const repo = chromeRepo();
+  const cfgPath = join(repo, 'chrome-store/store.config.json');
+  const cfg = JSON.parse(readFileSync(cfgPath, 'utf8'));
+  writeFileSync(cfgPath, JSON.stringify({ ...cfg, promoVideo: 'https://vimeo.com/1' }));
+  assert.ok(checkChromeListing(loadChromeListing(cfgPath)).errors.some((e) => /promoVideo must be a YouTube URL/.test(e)));
+  writeFileSync(cfgPath, JSON.stringify({ ...cfg, promoVideo: 'https://youtu.be/Jrr2vy4up2c' }));
+  const [b] = bundleTargets(checkTargets(chromeConfig, repo), mkdtempSync(join(tmpdir(), 'bundle-')));
+  assert.equal(b.manifest.text.promoVideo, 'https://youtu.be/Jrr2vy4up2c');
+  assert.match(chromeChecklist(b.manifest), /Global promo video:\*\* `https:\/\/youtu\.be\/Jrr2vy4up2c`/);
+});
+
 test('checkTargets refuses listings that reach outside the repo', () => {
   const repo = chromeRepo();
   const outside = mkdtempSync(join(tmpdir(), 'outside-'));
