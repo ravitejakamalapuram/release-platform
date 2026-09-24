@@ -47,7 +47,7 @@ test('rejects bad configs with a pointed message', () => {
 
 test('normalizeTarget fills defaults', () => {
   assert.deepEqual(normalizeTarget({ ...chrome, path: 'extension/' }, 0), {
-    key: 'chrome-0', type: 'chrome', item_id: chrome.item_id, path: 'extension', build: '', node: '22', include: [], publish: true,
+    key: 'chrome-0', type: 'chrome', item_id: chrome.item_id, path: 'extension', build: '', node: '22', include: [], publish: true, listing: '',
   });
   const a = normalizeTarget({ ...android, signing: { key_alias: 'RELEASE_KEY_ALIAS' } }, 1);
   assert.equal(a.key, 'android-1');
@@ -57,6 +57,7 @@ test('normalizeTarget fills defaults', () => {
   assert.equal(a.release_status, 'completed');
   assert.equal(a.ci_task, 'assembleDebug');
   assert.equal(a.ci_build, '');
+  assert.equal(a.listing, '');
   assert.equal(normalizeTarget({ ...android, ci_task: 'app:assembleRelease', ci_build: 'flutter build apk --debug' }, 0).ci_build, 'flutter build apk --debug');
   assert.deepEqual(a.signing, {
     keystore_base64: 'ANDROID_KEYSTORE_BASE64', keystore_password: 'ANDROID_KEYSTORE_PASSWORD',

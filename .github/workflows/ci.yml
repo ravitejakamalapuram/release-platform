@@ -89,3 +89,17 @@ jobs:
       bump: patch
       directory: tests/fixtures/chrome-app
       store_preflight: false   # the fixture's item id is fake; real apps keep the read-only preflight
+
+  # Dry run of the listing workflow against the fixture: validation, bundling and the checklist
+  # issue logic (read-only: lists issues, opens none).
+  listing-dry-run:
+    needs: [test]
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+      issues: write
+      id-token: write
+    uses: ./.github/workflows/listing.yml
+    with:
+      dry_run: true
+      directory: tests/fixtures/chrome-app

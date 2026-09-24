@@ -9,3 +9,4 @@ targets:
     item_id: aaaabbbbccccddddeeeeffffgggghhhh
     path: extension
     build: mkdir -p extension/generated && date -u > extension/generated/build.txt
+    listing: chrome-store/store.config.json

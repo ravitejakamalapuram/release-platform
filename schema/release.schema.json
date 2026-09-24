@@ -100,6 +100,10 @@
         "publish": {
           "type": "boolean",
           "description": "Submit for review after upload (default true). false = upload a draft only."
+        },
+        "listing": {
+          "$ref": "#/$defs/relativePath",
+          "description": "Optional store.config.json with the Chrome Web Store listing (descriptions, screenshots, promo images). Validated in PR checks; listing.yml prepares an upload checklist (the CWS API cannot change listings)."
         }
       }
     },
@@ -118,6 +122,10 @@
           "type": "string",
           "pattern": "^[a-zA-Z][a-zA-Z0-9_]*(\\.[a-zA-Z][a-zA-Z0-9_]*)+$",
           "patternHint": "an Android application id like com.example.app"
+        },
+        "listing": {
+          "$ref": "#/$defs/relativePath",
+          "description": "Optional fastlane-style metadata directory (<locale>/title.txt, short_description.txt, full_description.txt, images/...). Validated in PR checks; listing.yml syncs it to the Play store listing."
         },
         "gradle_task": {
           "type": "string",

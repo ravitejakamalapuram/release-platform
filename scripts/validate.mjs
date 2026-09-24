@@ -52,6 +52,7 @@ export function normalizeTarget(target, index) {
       node: target.node ?? '22',
       include: target.include ?? [],
       publish: target.publish ?? true,
+      listing: target.listing ?? '',
     };
   }
   return {
@@ -69,6 +70,7 @@ export function normalizeTarget(target, index) {
     release_status: target.release_status ?? 'completed',
     release_notes: target.release_notes ?? '',
     signing: { ...DEFAULT_SIGNING, ...(target.signing ?? {}) },
+    listing: target.listing ?? '',
   };
 }
 

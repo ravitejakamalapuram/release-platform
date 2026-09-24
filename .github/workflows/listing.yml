@@ -1,0 +1,237 @@
+# Reusable store-listing sync: validate -> bundle -> Google Play (API) | Chrome Web Store (checklist).
+#
+# Callers (see templates/listing-caller.yml) need:
+#   permissions: { contents: read, issues: write, id-token: write }
+#
+# Google Play: the listing text and images are made to match the repo through the Android
+# Publisher API (only what differs is changed; an unchanged listing commits nothing).
+# Chrome Web Store: its API cannot change listings, so this opens one GitHub issue per listing
+# change with the files and a step-by-step checklist for the Developer Dashboard.
+name: listing
+
+on:
+  workflow_call:
+    inputs:
+      dry_run:
+        description: 'Validate and report what would change, without writing to Play or opening issues'
+        type: boolean
+        default: false
+      targets:
+        description: 'Optional comma list of target types (chrome,android). Empty = all targets with a listing.'
+        type: string
+        default: ''
+      directory:
+        description: 'Directory (inside the caller repo) that contains release.yaml'
+        type: string
+        default: '.'
+      platform_ref:
+        description: 'Advanced: release-platform ref for the helper scripts. Default: the ref this workflow was called at.'
+        type: string
+        default: ''
+
+# Shares the release lock: a listing edit and a release edit on Play must never overlap.
+concurrency:
+  group: release-platform-release-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions: {}
+
+env:
+  WIF_PROVIDER: projects/335964689163/locations/global/workloadIdentityPools/github/providers/github-oidc
+  SERVICE_ACCOUNT: release-bot@rk-release-platform.iam.gserviceaccount.com
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # Same as release.yml: reads only its own OIDC claims, touches no app code.
+  resolve:
+    name: Resolve platform
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      id-token: write
+    outputs:
+      platform_sha: ${{ steps.platform.outputs.sha }}
+    steps:
+      - name: Resolve release-platform ref
+        id: platform
+        env:
+          OVERRIDE: ${{ inputs.platform_ref }}
+        run: |
+          if [ -n "$OVERRIDE" ]; then
+            echo "sha=$OVERRIDE" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+            echo "::error::The calling workflow must grant 'permissions: id-token: write'."
+            exit 1
+          fi
+          token=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=release-platform-self" | jq -r .value)
+          echo "::add-mask::$token"
+          payload=$(cut -d. -f2 <<<"$token" | tr '_-' '/+')
+          while [ $(( ${#payload} % 4 )) -ne 0 ]; do payload="${payload}="; done
+          claims=$(base64 -d <<<"$payload")
+          echo "Platform workflow: $(jq -r .job_workflow_ref <<<"$claims")"
+          echo "sha=$(jq -r .job_workflow_sha <<<"$claims")" >> "$GITHUB_OUTPUT"
+
+  # Reads app files (release.yaml + listing text/images) with platform scripts only.
+  # Runs no app code; still gets no id-token (defence in depth).
+  prepare:
+    name: Validate and bundle listings
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      platform_sha: ${{ needs.resolve.outputs.platform_sha }}
+      chrome_ids: ${{ steps.bundle.outputs.chrome_listing_ids }}
+      android_ids: ${{ steps.bundle.outputs.android_listing_ids }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ravitejakamalapuram/release-platform
+          ref: ${{ needs.resolve.outputs.platform_sha }}
+          path: platform
+          persist-credentials: false
+
+      - uses: actions/checkout@v7
+        with:
+          path: app
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          package-manager-cache: false
+          node-version: '22'
+
+      - name: Validate and bundle
+        id: bundle
+        working-directory: app/${{ inputs.directory }}
+        env:
+          TARGETS: ${{ inputs.targets }}
+          DIRECTORY: ${{ inputs.directory }}
+        run: |
+          if [ ! -f release.yaml ]; then
+            echo "::error::No release.yaml in '$DIRECTORY'. See https://github.com/ravitejakamalapuram/release-platform#store-listings"
+            exit 1
+          fi
+          yq -o=json '.' release.yaml > "$RUNNER_TEMP/release.json"
+          node "$GITHUB_WORKSPACE/platform/scripts/listing.mjs" bundle --config "$RUNNER_TEMP/release.json" \
+            --repo . --targets "$TARGETS" --out "$GITHUB_WORKSPACE/listings"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: listings
+          path: listings/
+          if-no-files-found: ignore
+
+  # Chrome Web Store: no store access at all, only permission to open the checklist issue.
+  chrome:
+    name: Chrome listing
+    needs: prepare
+    if: needs.prepare.outputs.chrome_ids != '' && needs.prepare.outputs.chrome_ids != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    strategy:
+      fail-fast: false
+      matrix:
+        key: ${{ fromJSON(needs.prepare.outputs.chrome_ids) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ravitejakamalapuram/release-platform
+          ref: ${{ needs.prepare.outputs.platform_sha }}
+          path: platform
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: listings
+          path: listings
+
+      - uses: actions/setup-node@v7
+        with:
+          package-manager-cache: false
+          node-version: '22'
+
+      - name: Open the listing checklist issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEY: ${{ matrix.key }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          args=(chrome-issue --bundle "listings/$KEY" --github-repo "$GITHUB_REPOSITORY" --run-url "$RUN_URL")
+          if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
+          node platform/scripts/listing.mjs "${args[@]}"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: listing-chrome-${{ matrix.key }}
+          path: listings/${{ matrix.key }}/
+
+  # Holds id-token: runs ONLY release-platform scripts on the downloaded bundle (see release.yml).
+  android:
+    name: Play listing
+    needs: prepare
+    if: needs.prepare.outputs.android_ids != '' && needs.prepare.outputs.android_ids != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        key: ${{ fromJSON(needs.prepare.outputs.android_ids) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ravitejakamalapuram/release-platform
+          ref: ${{ needs.prepare.outputs.platform_sha }}
+          path: platform
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: listings
+          path: listings
+
+      - uses: actions/setup-node@v7
+        with:
+          package-manager-cache: false
+          node-version: '22'
+
+      - name: Package name
+        id: target
+        env:
+          KEY: ${{ matrix.key }}
+        run: echo "package=$(jq -r .package "listings/$KEY/listing.json")" >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate to Google (keyless)
+        id: auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.SERVICE_ACCOUNT }}
+          token_format: access_token
+          access_token_scopes: https://www.googleapis.com/auth/androidpublisher
+          create_credentials_file: false
+
+      - name: Sync the Play listing
+        env:
+          GOOGLE_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          PACKAGE: ${{ steps.target.outputs.package }}
+          KEY: ${{ matrix.key }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          args=(listing --package "$PACKAGE" --bundle "listings/$KEY")
+          if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
+          node platform/scripts/play.mjs "${args[@]}"

@@ -9,7 +9,9 @@
 //   GOOGLE_ACCESS_TOKEN=... node scripts/play.mjs complete --package com.x --track production
 //   GOOGLE_ACCESS_TOKEN=... node scripts/play.mjs tracks   --package com.x
 //   GOOGLE_ACCESS_TOKEN=... node scripts/play.mjs preflight --package com.x --version-code 1002003   (read-only)
+//   GOOGLE_ACCESS_TOKEN=... node scripts/play.mjs listing  --package com.x --bundle listings/android-0 [--dry-run]
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { ApiError, request } from './lib/http.mjs';
@@ -24,6 +26,10 @@ export const urls = {
   bundles: (pkg, id) => `${API}/upload/androidpublisher/v3/applications/${encodeURIComponent(pkg)}/edits/${encodeURIComponent(id)}/bundles?uploadType=media`,
   tracks: (pkg, id) => `${app(pkg)}/edits/${encodeURIComponent(id)}/tracks`,
   track: (pkg, id, track) => `${app(pkg)}/edits/${encodeURIComponent(id)}/tracks/${encodeURIComponent(track)}`,
+  listing: (pkg, id, lang) => `${app(pkg)}/edits/${encodeURIComponent(id)}/listings/${encodeURIComponent(lang)}`,
+  images: (pkg, id, lang, type) => `${app(pkg)}/edits/${encodeURIComponent(id)}/listings/${encodeURIComponent(lang)}/${encodeURIComponent(type)}`,
+  imageUpload: (pkg, id, lang, type) =>
+    `${API}/upload/androidpublisher/v3/applications/${encodeURIComponent(pkg)}/edits/${encodeURIComponent(id)}/listings/${encodeURIComponent(lang)}/${encodeURIComponent(type)}?uploadType=media`,
   commit: (pkg, id, notForReview) => `${app(pkg)}/edits/${encodeURIComponent(id)}:commit${notForReview ? '?changesNotSentForReview=true' : ''}`,
 };
 
@@ -56,9 +62,10 @@ export function explainPlayError(err, pkg) {
 
 /**
  * Wraps one edit: insert -> fn(editId) -> commit (or delete on failure / when readOnly).
- * Commit falls back to changesNotSentForReview=true when Play demands it.
+ * Commit falls back to changesNotSentForReview=true when Play demands it. `commitIf(result)`
+ * returning false discards the edit instead (nothing changed, so nothing is sent for review).
  */
-export async function withEdit({ pkg, token, fetchImpl, readOnly = false }, fn) {
+export async function withEdit({ pkg, token, fetchImpl, readOnly = false, commitIf }, fn) {
   const { id } = await request({ method: 'POST', url: urls.insert(pkg), token, json: {}, fetchImpl }).catch((err) => {
     throw explainPlayError(err, pkg);
   });
@@ -69,7 +76,7 @@ export async function withEdit({ pkg, token, fetchImpl, readOnly = false }, fn) 
     await discard({ pkg, token, fetchImpl, id });
     throw explainPlayError(err, pkg);
   }
-  if (readOnly) {
+  if (readOnly || (commitIf && !commitIf(result))) {
     await discard({ pkg, token, fetchImpl, id });
     return { result, commit: null };
   }
@@ -214,6 +221,46 @@ export async function changeRollout({ pkg, token, fetchImpl, track, action, frac
   });
 }
 
+const LISTING_TEXT = ['title', 'shortDescription', 'fullDescription', 'video'];
+
+/**
+ * Make the Play store listing match a bundle from scripts/listing.mjs (listing.json + files).
+ * Per locale: update the text if it differs; for each image type the bundle has, replace the
+ * images only when the ordered sha256 list differs from what Play has. Image types the bundle
+ * does not mention are left alone. Commits only when something changed; dryRun only reports.
+ */
+export async function syncListing({ pkg, token, fetchImpl, bundle, readFile, dryRun = false }) {
+  const changes = [];
+  const { commit } = await withEdit({ pkg, token, fetchImpl, readOnly: dryRun, commitIf: () => changes.length > 0 }, async (id) => {
+    for (const loc of bundle.locales) {
+      const current = await request({ url: urls.listing(pkg, id, loc.language), token, fetchImpl }).catch((err) => {
+        if (err instanceof ApiError && err.status === 404) return null;
+        throw err;
+      });
+      const want = { language: loc.language, title: loc.title, shortDescription: loc.shortDescription, fullDescription: loc.fullDescription };
+      if (loc.video) want.video = loc.video;
+      const textChanged = !current || LISTING_TEXT.some((k) => k in want && (current[k] ?? '') !== want[k]);
+      if (textChanged) {
+        changes.push(`${loc.language}: ${current ? 'text updated' : 'listing created'}`);
+        if (!dryRun) await request({ method: 'PUT', url: urls.listing(pkg, id, loc.language), token, json: want, fetchImpl });
+      }
+      for (const [type, images] of Object.entries(loc.images ?? {})) {
+        const { images: live = [] } = await request({ url: urls.images(pkg, id, loc.language, type), token, fetchImpl });
+        const same = live.length === images.length && live.every((img, i) => img.sha256 === images[i].sha256);
+        if (same) continue;
+        changes.push(`${loc.language}: ${type} (${live.length} -> ${images.length})`);
+        if (dryRun) continue;
+        await request({ method: 'DELETE', url: urls.images(pkg, id, loc.language, type), token, fetchImpl });
+        for (const img of images) {
+          await request({ method: 'POST', url: urls.imageUpload(pkg, id, loc.language, type), token, body: readFile(img.file), contentType: img.contentType, fetchImpl });
+        }
+      }
+    }
+    return { changes };
+  });
+  return { changes, commit };
+}
+
 /** Read-only: list all tracks (edit is always deleted, never committed). */
 export async function listTracks({ pkg, token, fetchImpl }) {
   const { result } = await withEdit({ pkg, token, fetchImpl, readOnly: true }, (id) => request({ method: 'GET', url: urls.tracks(pkg, id), token, fetchImpl }));
@@ -250,6 +297,8 @@ async function cli() {
       version: { type: 'string' },
       'version-code': { type: 'string' },
       'notes-file': { type: 'string' },
+      bundle: { type: 'string' },
+      'dry-run': { type: 'boolean', default: false },
       status: { type: 'string', default: 'completed' },
     },
   });
@@ -291,13 +340,25 @@ async function cli() {
       out = `PREFLIGHT_OK: versionCode ${values['version-code']} > ${highest.code}${highest.track ? ` (highest, on ${highest.track})` : ' (no releases yet)'}`;
       break;
     }
+    case 'listing': {
+      if (!values.bundle) throw new Error('--bundle (a directory made by scripts/listing.mjs bundle) is required');
+      const bundle = JSON.parse(readFileSync(join(values.bundle, 'listing.json'), 'utf8'));
+      if (bundle.package !== pkg) throw new Error(`Bundle is for ${bundle.package}, not ${pkg}`);
+      const dryRun = values['dry-run'];
+      const { changes, commit } = await syncListing({ pkg, token, bundle, dryRun, readFile: (f) => readFileSync(join(values.bundle, f)) });
+      for (const c of changes) log(`  ${c}`);
+      if (!changes.length) out = `LISTING_UNCHANGED: ${pkg} already matches the repo (fingerprint ${bundle.fingerprint})`;
+      else if (dryRun) out = `LISTING_WOULD_CHANGE (dry run): ${pkg} ${changes.length} change(s)`;
+      else out = `LISTING_${reportCommit(commit)}: ${pkg} ${changes.length} change(s)`;
+      break;
+    }
     case 'tracks': {
       const lines = describeTracks(await listTracks({ pkg, token }));
       out = lines.length ? lines.join('\n') : '(no releases on any track)';
       break;
     }
     default:
-      throw new Error(`Unknown command "${command}" (expected upload|preflight|promote|rollout|halt|complete|tracks)`);
+      throw new Error(`Unknown command "${command}" (expected upload|preflight|promote|rollout|halt|complete|tracks|listing)`);
   }
   log(out);
   setOutput('result', out.split('\n')[0]);

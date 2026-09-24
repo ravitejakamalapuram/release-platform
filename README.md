@@ -10,7 +10,7 @@ upload keys, and they stay in each app repo.
 
 - [How it works](#how-it-works) · [Security model](#security-model)
 - [Onboarding a new app](#onboarding) · [Migrating from .github-workflows-shared](#migrating-from-github-workflows-shared)
-- [PR checks](#pr-checks) · [Releasing](#releasing) · [Promoting (Play)](#promoting-google-play) · [Dashboard](#dashboard)
+- [PR checks](#pr-checks) · [Releasing](#releasing) · [Promoting (Play)](#promoting-google-play) · [Store listings](#store-listings) · [Dashboard](#dashboard)
 - [release.yaml reference](#releaseyaml-reference)
 - [Troubleshooting](#troubleshooting)
 - [One-time setup (already done)](#one-time-setup-already-done)
@@ -326,6 +326,61 @@ gh api "repos/$REPO/environments/production" --jq '.protection_rules'   # verify
 for public repos; private repos need a paid plan (otherwise the environment exists but cannot
 enforce approval). Use the `environment` input to pick another name.
 
+## Store listings
+
+Keep each store listing (descriptions, screenshots, promo images) in the repo, next to the code.
+PR checks validate it against the store's rules. The `listing` workflow then pushes it (Google
+Play) or turns it into a checklist for the dashboard (Chrome Web Store).
+
+**1. Point the target at the listing** in `release.yaml`:
+
+```yaml
+targets:
+  - type: chrome
+    item_id: higmlhleblpmdogjccpmjlnilpmhohal
+    path: apps/extension/dist
+    listing: chrome-store/store.config.json   # image paths inside are relative to this file
+  - type: android
+    package: com.example.app
+    listing: fastlane/metadata/android         # <locale>/title.txt, short_description.txt,
+                                               # full_description.txt, images/...
+```
+
+`store.config.json` keys used: `shortDescription`, `description`, `screenshots` (list),
+`promotionalImages.smallTile` / `.marquee`, `privacyPolicyUrl`, `supportUrl`, `websiteUrl`,
+`publisherId` (for the dashboard link). The Android layout is the standard fastlane "supply" one:
+`images/icon.png`, `images/featureGraphic.png` and `images/phoneScreenshots/*.png` (plus
+`sevenInchScreenshots`, `tenInchScreenshots`, `tvScreenshots`, `wearScreenshots`, `tvBanner`,
+`promoGraphic`). Locale folders without a `title.txt` (such as `changelogs/`) are ignored.
+
+**2. PR checks** (`app-ci.yml`) fail when a listing breaks the store's rules:
+
+| Store | Checked |
+| --- | --- |
+| Chrome | short description ≤ 132 chars, description ≤ 16,000; 1–5 screenshots, each exactly 1280×800 or 640×400; small tile 440×280; marquee 1400×560; URLs are https |
+| Play | title ≤ 30, short ≤ 80, full ≤ 4,000 chars; 2–8 phone screenshots, sides 320–3840 px and at most 2:1; icon 512×512 PNG; feature graphic 1024×500 |
+
+Every referenced file must exist inside the repo, as PNG or JPEG.
+
+**3. Sync** with the `listing` workflow (copy
+[`templates/listing-caller.yml`](templates/listing-caller.yml)), run manually after merging:
+
+- **Google Play:** one Play edit per run. Text is updated when it differs. For each image type
+  in the repo, images are replaced only when the ordered SHA-256 list differs from what Play
+  has. Image types the repo does not mention are left alone. If nothing differs, the edit is
+  discarded, so nothing is sent for review.
+- **Chrome Web Store:** the store's API [cannot change listings](https://developer.chrome.com/docs/webstore/api)
+  (it only uploads, publishes and reports status). So the workflow opens a `store-listing`
+  issue with the files (as a run artifact), the dashboard link and the exact steps, including
+  **Submit for review**. Each listing version gets one issue, keyed by a content fingerprint.
+  Re-runs don't duplicate it, and a newer listing closes an older open issue as superseded.
+
+`dry_run: true` validates and reports what would change, without writing to Play or opening
+an issue. The listing workflow shares the release lock, so a listing edit and a release never
+touch Play at the same time. Security is the same as for releases: only the Play job holds
+`id-token`, and it runs platform scripts on a bundle that a job without store access built from
+the repo's files.
+
 ## Dashboard
 
 [`dashboard.yml`](.github/workflows/dashboard.yml) runs daily (and on demand) and calls the
@@ -354,6 +409,7 @@ build job, before packaging), `version_file` (optional baseline source for untag
 | `node` | `'22'` | Node.js version for `build` |
 | `include` | everything minus junk | allowlist of files, dirs or globs relative to `path` |
 | `publish` | `true` | `false` = upload a draft, don't submit for review |
+| `listing` | none | `store.config.json` with the store listing; see [Store listings](#store-listings) |
 
 **android**
 
@@ -371,6 +427,7 @@ build job, before packaging), `version_file` (optional baseline source for untag
 | `release_status` | `completed` | `draft` while the app itself is a draft in Play Console |
 | `release_notes` | generated notes | Markdown changelog; first `## ` section → en-US "What's new" |
 | `signing` | `ANDROID_*` names | secret names: `keystore_base64`, `keystore_password`, `key_alias`, `key_password` |
+| `listing` | none | fastlane-style metadata directory; see [Store listings](#store-listings) |
 
 Reusable workflow inputs besides the above: `directory` (where `release.yaml` lives; tags stay
 repo-wide) and `platform_ref` (advanced; which release-platform commit's scripts to use — by

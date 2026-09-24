@@ -101,6 +101,13 @@ jobs:
           yq -o=json '.' release.yaml > "$RUNNER_TEMP/release.json"
           node "$GITHUB_WORKSPACE/platform/scripts/validate.mjs" --config "$RUNNER_TEMP/release.json" --repo . --targets "$TARGETS"
 
+      # Targets with `listing:`: store rules (text limits, image sizes/counts) checked on every PR.
+      - name: Validate store listings
+        working-directory: app/${{ inputs.directory }}
+        env:
+          TARGETS: ${{ inputs.targets }}
+        run: node "$GITHUB_WORKSPACE/platform/scripts/listing.mjs" check --config "$RUNNER_TEMP/release.json" --repo . --targets "$TARGETS"
+
       - name: Node for the test gate
         if: steps.config.outputs.node != '22'
         uses: actions/setup-node@v7

@@ -1,0 +1,15 @@
+{
+  "name": "Fixture",
+  "shortDescription": "Fixture extension used by release-platform CI.",
+  "description": "Exercises listing validation and bundling in CI. Not a real store item.",
+  "category": "Developer Tools",
+  "language": "en",
+  "privacyPolicyUrl": "https://example.com/privacy",
+  "publisherId": "fixture-publisher",
+  "screenshots": [
+    "screenshots/01-main.png"
+  ],
+  "promotionalImages": {
+    "smallTile": "promo/small-tile.png"
+  }
+}
