@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  bundleTargets, checkChromeListing, checkPlayListing, checkTargets, chromeChecklist, imageSize, loadChromeListing,
+  bundleTargets, syncVideoIssue, VIDEO_TITLE, checkChromeListing, checkPlayListing, checkTargets, chromeChecklist, imageSize, loadChromeListing,
   loadPlayListing, planChromeIssue, syncChromeIssue,
 } from '../scripts/listing.mjs';
 import { syncListing, urls } from '../scripts/play.mjs';
@@ -256,4 +256,26 @@ test('syncListing dry run reports changes but writes nothing', async () => {
   assert.equal(changes.length, 1 + types.length);
   assert.equal(commit, null);
   assert.ok(f.calls.every((c) => c.method !== 'PUT' && c.method !== 'POST' || c.url === urls.insert(PKG)));
+});
+
+test('demo-video checkpoint: opens one agent-ready issue when promoVideo is missing', () => {
+  const calls = [];
+  const gh = (a) => (calls.push(a), a[1] === 'list' ? '[]' : a[0] === 'issue' && a[1] === 'create' ? 'https://github.com/o/r/issues/9\n' : '');
+  const r = syncVideoIssue({ manifest: { item_id: 'item1', text: {} }, repo: 'o/r', gh });
+  assert.equal(r.result, 'DEMO_VIDEO_MISSING: opened https://github.com/o/r/issues/9');
+  const create = calls.find((a) => a[0] === 'issue' && a[1] === 'create');
+  assert.equal(create[create.indexOf('--title') + 1], VIDEO_TITLE);
+  assert.deepEqual(create.filter((x, i) => create[i - 1] === '--label'), ['demo-video', 'agent-ready']);
+  const again = syncVideoIssue({ manifest: { item_id: 'item1', text: {} }, repo: 'o/r', gh: (a) => (a[1] === 'list' ? JSON.stringify([{ number: 9, body: 'demo-video-checkpoint: item1' }]) : '') });
+  assert.equal(again.action, 'skip', 'never a second issue');
+});
+
+test('demo-video checkpoint: closes the open issue once promoVideo is set; dry run writes nothing', () => {
+  const calls = [];
+  const gh = (a) => (calls.push(a), a[1] === 'list' ? JSON.stringify([{ number: 9, body: 'demo-video-checkpoint: item1' }]) : '');
+  const m = { item_id: 'item1', text: { promoVideo: 'https://youtu.be/x' } };
+  assert.equal(syncVideoIssue({ manifest: m, repo: 'o/r', gh, dryRun: true }).action, 'close');
+  assert.ok(!calls.some((a) => a[1] === 'close'));
+  syncVideoIssue({ manifest: m, repo: 'o/r', gh });
+  assert.ok(calls.some((a) => a[1] === 'close' && a[2] === '9'));
 });

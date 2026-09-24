@@ -375,6 +375,11 @@ Every referenced file must exist inside the repo, as PNG or JPEG.
   **Submit for review**. Each listing version gets one issue, keyed by a content fingerprint.
   Re-runs don't duplicate it, and a newer listing closes an older open issue as superseded.
 
+**Demo-video checkpoint:** a Chrome listing without `promoVideo` gets one "Demo video needed" issue
+(labels `demo-video`, `agent-ready`). The agent company records the demo; the board uploads it to
+YouTube (unlisted) and sets `promoVideo`. The next listing run closes the issue. A first publish can't
+silently go out without a video.
+
 `dry_run: true` validates and reports what would change, without writing to Play or opening
 an issue. The listing workflow shares the release lock, so a listing edit and a release never
 touch Play at the same time. Security is the same as for releases: only the Play job holds
