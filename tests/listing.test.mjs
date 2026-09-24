@@ -73,8 +73,11 @@ function playRepo({ title = 'TelePort', phones = [[1080, 1920], [1080, 1920]] } 
 const playConfig = { app: 'tp', targets: [{ type: 'android', package: 'com.example.tp', listing: 'fastlane/metadata/android' }] };
 
 test('imageSize reads PNG and JPEG dimensions and rejects other bytes', () => {
-  assert.deepEqual(imageSize(png(1280, 800)), { type: 'png', width: 1280, height: 800 });
-  assert.deepEqual(imageSize(jpeg(640, 400)), { type: 'jpeg', width: 640, height: 400 });
+  assert.deepEqual(imageSize(png(1280, 800)), { type: 'png', width: 1280, height: 800, alpha: false });
+  assert.deepEqual(imageSize(jpeg(640, 400)), { type: 'jpeg', width: 640, height: 400, alpha: false });
+  const rgba = png(1280, 800);
+  rgba[25] = 6;
+  assert.equal(imageSize(rgba).alpha, true);
   assert.equal(imageSize(Buffer.from('GIF89a......')), null);
 });
 
@@ -94,6 +97,16 @@ test('chrome rules: wrong screenshot size, long short description, too many scre
   assert.ok(errors.some((e) => /6 listed \(the store takes 1 to 5\)/.test(e)));
   assert.ok(errors.some((e) => /screenshots\[0\] is 2560x1600/.test(e)));
   assert.ok(warnings.some((w) => /largeTile is not used/.test(w)));
+});
+
+test('chrome rules: screenshots with transparency are refused', () => {
+  const repo = chromeRepo();
+  const p = join(repo, 'store/assets/screenshots/01-view.png');
+  const b = readFileSync(p);
+  b[25] = 6;
+  writeFileSync(p, b);
+  const { errors } = checkChromeListing(loadChromeListing(join(repo, 'chrome-store/store.config.json')));
+  assert.ok(errors.some((e) => /screenshots\[0\] has transparency/.test(e)));
 });
 
 test('checkTargets refuses listings that reach outside the repo', () => {
