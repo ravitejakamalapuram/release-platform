@@ -4,7 +4,7 @@ name: dashboard
 
 on:
   schedule:
-    - cron: '30 5 * * *'
+    - cron: '0 2 * * *'   # 07:30 IST, just before the CEO's 08:00 IST daily brief
   workflow_dispatch:
 
 permissions: {}
