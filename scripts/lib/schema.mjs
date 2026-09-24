@@ -1,6 +1,7 @@
 // A deliberately small JSON Schema validator: just the keywords schema/release.schema.json uses.
-// Supported: $ref (local #/$defs/...), type, const, enum, pattern, minLength, minimum, maximum,
-// required, properties, additionalProperties (bool), items, minItems, uniqueItems, oneOf.
+// Supported: $ref (local #/$defs/...), type, const, enum, pattern, minLength, maxLength, minimum,
+// maximum, required, properties, additionalProperties (bool), items, minItems, maxItems,
+// uniqueItems, oneOf.
 // Returns a list of { path, message } errors; empty means valid.
 
 function typeOf(value) {
@@ -42,6 +43,7 @@ export function validate(schema, value, root = schema, path = '$') {
 
   if (typeof value === 'string') {
     if (s.minLength !== undefined && value.length < s.minLength) add(`must not be empty`);
+    if (s.maxLength !== undefined && value.length > s.maxLength) add(`must be at most ${s.maxLength} characters (got ${value.length})`);
     if (s.pattern && !new RegExp(s.pattern).test(value)) add(`must match ${s.pattern}${s.patternHint ? ` (${s.patternHint})` : ''}`);
   }
   if (typeof value === 'number') {
@@ -51,6 +53,7 @@ export function validate(schema, value, root = schema, path = '$') {
 
   if (Array.isArray(value)) {
     if (s.minItems !== undefined && value.length < s.minItems) add(`must have at least ${s.minItems} item(s)`);
+    if (s.maxItems !== undefined && value.length > s.maxItems) add(`must have at most ${s.maxItems} item(s) (got ${value.length})`);
     if (s.uniqueItems && new Set(value.map((v) => JSON.stringify(v))).size !== value.length) add('must not contain duplicates');
     if (s.items) value.forEach((item, i) => errors.push(...validate(s.items, item, root, `${path}[${i}]`)));
   }

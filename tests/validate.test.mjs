@@ -47,7 +47,7 @@ test('rejects bad configs with a pointed message', () => {
 
 test('normalizeTarget fills defaults', () => {
   assert.deepEqual(normalizeTarget({ ...chrome, path: 'extension/' }, 0), {
-    key: 'chrome-0', type: 'chrome', item_id: chrome.item_id, path: 'extension', build: '', node: '22', include: [], publish: true,
+    key: 'chrome-0', type: 'chrome', item_id: chrome.item_id, path: 'extension', build: '', node: '22', include: [], publish: true, store: '',
   });
   const a = normalizeTarget({ ...android, signing: { key_alias: 'RELEASE_KEY_ALIAS' } }, 1);
   assert.equal(a.key, 'android-1');

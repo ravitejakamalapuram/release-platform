@@ -303,6 +303,24 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+      # Store assets already passed scripts/store-assets.mjs in the plan job; this only stages
+      # them for a human to paste into the Developer Dashboard (the Store API cannot upload them).
+      # Written to a separate directory so it never collides with `ls dist/*.zip` in publish-chrome.
+      - name: Bundle store listing
+        if: steps.target.outputs.store != ''
+        working-directory: app/${{ inputs.directory }}
+        env:
+          STORE: ${{ steps.target.outputs.store }}
+          OUT: ${{ github.workspace }}/store-dist/store-listing-${{ needs.plan.outputs.app }}-${{ needs.plan.outputs.version }}.zip
+        run: node "$GITHUB_WORKSPACE/platform/scripts/bundle-store-listing.mjs" --repo . --store "$STORE" --out "$OUT"
+
+      - uses: actions/upload-artifact@v7
+        if: steps.target.outputs.store != ''
+        with:
+          name: store-listing-${{ steps.target.outputs.key }}
+          path: store-dist/
+          if-no-files-found: error
+
   # Runs app code -> no id-token. Only the upload-key secrets are exposed here.
   build-android:
     name: Build android
@@ -710,6 +728,14 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           pattern: pkg-*
+          path: dist
+          merge-multiple: true
+
+      # Optional: only produced when a chrome target sets `store`. download-artifact's default
+      # if-no-artifact-found (warn) is what we want here - no store listing is not an error.
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: store-listing-*
           path: dist
           merge-multiple: true
 

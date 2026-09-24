@@ -100,6 +100,10 @@
         "publish": {
           "type": "boolean",
           "description": "Submit for review after upload (default true). false = upload a draft only."
+        },
+        "store": {
+          "$ref": "#/$defs/relativePath",
+          "description": "Path to a JSON listing manifest for the Chrome Web Store Developer Dashboard (shortDescription, description, category, screenshots[], promotionalImages{smallTile,marquee}, privacyPolicyUrl, supportUrl, websiteUrl - see schema/store-listing.schema.json). Validated by scripts/store-assets.mjs and, on release, bundled into a store-listing-<app>-<version>.zip artifact. The Chrome Web Store API cannot upload any of this; the artifact only makes pasting it into the dashboard by hand mechanical."
         }
       }
     },

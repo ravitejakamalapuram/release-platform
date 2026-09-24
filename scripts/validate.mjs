@@ -12,6 +12,7 @@ import { parseArgs } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { validate, formatErrors } from './lib/schema.mjs';
 import { log, main, setOutput } from './lib/gha.mjs';
+import { checkStoreAssets } from './store-assets.mjs';
 
 const SCHEMA_PATH = fileURLToPath(new URL('../schema/release.schema.json', import.meta.url));
 export const TARGET_TYPES = ['chrome', 'android'];
@@ -52,6 +53,7 @@ export function normalizeTarget(target, index) {
       node: target.node ?? '22',
       include: target.include ?? [],
       publish: target.publish ?? true,
+      store: target.store ?? '',
     };
   }
   return {
@@ -106,6 +108,20 @@ export function testToolchain(config) {
     java: android[0]?.java ?? '',
     flutter: android.find((t) => t.flutter)?.flutter ?? '',
   };
+}
+
+/** Validate every chrome target's declared store listing manifest (screenshots, promo images, text limits). */
+export function checkStoreTargets(plan, repo) {
+  const errors = [];
+  for (const target of plan.chrome) {
+    if (!target.store) continue;
+    try {
+      checkStoreAssets({ repo, storePath: target.store });
+    } catch (err) {
+      errors.push(`${target.key} (${target.item_id}): ${err.message}`);
+    }
+  }
+  if (errors.length) throw new Error(errors.join('\n'));
 }
 
 export function matrixIds(plan) {
@@ -216,6 +232,7 @@ async function cli() {
   }
   checkConfig(config);
   const plan = planTargets(config, values.targets);
+  checkStoreTargets(plan, values.repo);
   const baseline = detectBaseline(normalizeTarget(config.targets[0], 0), values.repo, config.version_file);
 
   log(`release.yaml OK: app=${config.app}, chrome=${plan.chrome.length}, android=${plan.android.length}`);

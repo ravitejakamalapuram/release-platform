@@ -11,7 +11,7 @@ upload keys, and they stay in each app repo.
 - [How it works](#how-it-works) · [Security model](#security-model)
 - [Onboarding a new app](#onboarding) · [Migrating from .github-workflows-shared](#migrating-from-github-workflows-shared)
 - [PR checks](#pr-checks) · [Releasing](#releasing) · [Promoting (Play)](#promoting-google-play) · [Dashboard](#dashboard)
-- [release.yaml reference](#releaseyaml-reference)
+- [release.yaml reference](#releaseyaml-reference) · [Chrome Web Store listing assets](#chrome-web-store-listing-assets-store)
 - [Troubleshooting](#troubleshooting)
 - [One-time setup (already done)](#one-time-setup-already-done)
 - [Developing this repo](#developing-this-repo)
@@ -354,6 +354,7 @@ build job, before packaging), `version_file` (optional baseline source for untag
 | `node` | `'22'` | Node.js version for `build` |
 | `include` | everything minus junk | allowlist of files, dirs or globs relative to `path` |
 | `publish` | `true` | `false` = upload a draft, don't submit for review |
+| `store` | none | path to a listing manifest, see [Chrome Web Store listing assets](#chrome-web-store-listing-assets-store) |
 
 **android**
 
@@ -375,6 +376,42 @@ build job, before packaging), `version_file` (optional baseline source for untag
 Reusable workflow inputs besides the above: `directory` (where `release.yaml` lives; tags stay
 repo-wide) and `platform_ref` (advanced; which release-platform commit's scripts to use — by
 default the exact commit of the workflow you called, read from the OIDC token's `job_workflow_sha`).
+
+### Chrome Web Store listing assets (`store`)
+
+**The Chrome Web Store API cannot upload a listing.** Its v2 surface is five methods -
+`media.upload`, `publishers.items.publish`, `publishers.items.fetchStatus`,
+`publishers.items.cancelSubmission`, `publishers.items.setPublishedDeployPercentage` - and
+`media.upload` takes the extension package, not images or text. Screenshots, promo tiles, the
+description, category and privacy/support/website links only exist as fields in the Developer
+Dashboard's own UI; nothing short of a person pasting them in gets them there. `store` does not
+change that. It exists so the parts that *can* be automated - checking the assets are correct and
+handing them to a human in one file - are, instead of a stale screenshot directory or an
+undersized promo tile only getting caught by a reviewer's eye.
+
+A chrome target's `store` field is a path to a JSON listing manifest (schema:
+[`schema/store-listing.schema.json`](schema/store-listing.schema.json)):
+
+| Field | Required | |
+| --- | --- | --- |
+| `shortDescription` | yes | dashboard "Short description"; ≤ 132 characters |
+| `description` | yes | dashboard "Description"; ≤ 16000 characters |
+| `category` | yes | dashboard "Category", e.g. `"Developer Tools"` (not checked against the Store's list) |
+| `screenshots` | yes | 1-5 paths, **relative to the manifest file**, in upload order; each a 1280x800 or 640x400 PNG/JPEG |
+| `promotionalImages.smallTile` | no | 440x280 PNG/JPEG |
+| `promotionalImages.marquee` | no | 1400x560 PNG/JPEG |
+| `privacyPolicyUrl` | no | dashboard "Privacy policy" |
+| `supportUrl` | no | dashboard "Support" |
+| `websiteUrl` | no | dashboard "Website" |
+
+`scripts/store-assets.mjs` validates all of this - every field, plus reading each declared PNG or
+JPEG's real pixel dimensions straight from its header bytes (no image library) - as part of the
+same `validate.mjs` step that checks `release.yaml`, so a bad listing fails app-ci.yml on a PR and
+the release job before anything builds. On release, `scripts/bundle-store-listing.mjs` packages the
+now-validated assets into a `store-listing-<app>-<version>.zip` release artifact: screenshots
+renumbered `01`, `02`, ... in upload order, the promo images, and a `LISTING.md` with each field's
+exact text under a heading that matches its Developer Dashboard label - download one file, paste
+each section into the dashboard.
 
 ## Troubleshooting
 
@@ -444,8 +481,9 @@ Layout:
 ```
 .github/workflows/  release.yml promote.yml status.yml app-ci.yml (reusable) · dashboard.yml ci.yml move-major-tag.yml (this repo)
 scripts/            cws.mjs play.mjs version.mjs validate.mjs package-chrome.mjs changelog.mjs status.mjs summary.mjs
+                    store-assets.mjs bundle-store-listing.mjs
 scripts/lib/        http.mjs (Google API client) gha.mjs (runner helpers) schema.mjs (tiny JSON Schema validator)
-schema/             release.schema.json
+schema/             release.schema.json store-listing.schema.json
 templates/          caller workflows to copy into app repos
 examples/           release.yaml examples
 tests/              node:test suites + fixtures (CI runs app-ci.yml and a release dry run against tests/fixtures/chrome-app)

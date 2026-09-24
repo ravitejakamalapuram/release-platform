@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/ravitejakamalapuram/release-platform/main/schema/store-listing.schema.json",
+  "title": "Chrome Web Store listing manifest",
+  "description": "Content for the Chrome Web Store Developer Dashboard listing, referenced by a chrome target's `store` field in release.yaml. The Chrome Web Store API cannot upload any of this (see scripts/store-assets.mjs); it exists so the release job can bundle it into a store-listing-<app>-<version>.zip artifact for a human to paste into the dashboard by hand. Screenshot and promo image paths are relative to this manifest's own file, not the repo root.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "shortDescription",
+    "description",
+    "category",
+    "screenshots"
+  ],
+  "properties": {
+    "shortDescription": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 132,
+      "description": "Dashboard 'Short description' field (shown in search results). Max 132 characters."
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 16000,
+      "description": "Dashboard 'Description' field (the full listing body). Max 16000 characters."
+    },
+    "category": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Dashboard 'Category' field, e.g. \"Developer Tools\". Not validated against the Store's category list."
+    },
+    "screenshots": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 5,
+      "items": {
+        "$ref": "#/$defs/assetPath"
+      },
+      "description": "1-5 screenshots, in the order they should be uploaded. Each must be a 1280x800 or 640x400 PNG or JPEG."
+    },
+    "promotionalImages": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Optional dashboard promo images.",
+      "properties": {
+        "smallTile": {
+          "$ref": "#/$defs/assetPath",
+          "description": "440x280 PNG or JPEG."
+        },
+        "marquee": {
+          "$ref": "#/$defs/assetPath",
+          "description": "1400x560 PNG or JPEG."
+        }
+      }
+    },
+    "privacyPolicyUrl": {
+      "$ref": "#/$defs/url",
+      "description": "Dashboard 'Privacy policy' field."
+    },
+    "supportUrl": {
+      "$ref": "#/$defs/url",
+      "description": "Dashboard 'Support' field."
+    },
+    "websiteUrl": {
+      "$ref": "#/$defs/url",
+      "description": "Dashboard 'Website' field."
+    }
+  },
+  "$defs": {
+    "assetPath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/).+$",
+      "patternHint": "a path relative to this manifest's own directory (not the repo root); '..' is fine"
+    },
+    "url": {
+      "type": "string",
+      "pattern": "^https?://",
+      "patternHint": "an http(s) URL"
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "shortDescription": "A tiny fixture extension used by release-platform's own CI.",
+  "description": "This is the release-platform fixture app. It exists only so app-ci.yml and a release.yml dry run have something real to build, package and validate against - including, since POR-21, its Chrome Web Store listing assets.",
+  "category": "Developer Tools",
+  "screenshots": [
+    "screenshots/01-tree.png",
+    "screenshots/02-table.png"
+  ],
+  "promotionalImages": {
+    "smallTile": "promo/small-tile.png",
+    "marquee": "promo/marquee.png"
+  },
+  "privacyPolicyUrl": "https://example.com/privacy",
+  "supportUrl": "https://example.com/support",
+  "websiteUrl": "https://example.com"
+}
