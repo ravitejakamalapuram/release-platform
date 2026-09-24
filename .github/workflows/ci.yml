@@ -91,9 +91,11 @@ jobs:
       store_preflight: false   # the fixture's item id is fake; real apps keep the read-only preflight
 
   # Dry run of the listing workflow against the fixture: validation, bundling and the checklist
-  # issue logic (read-only: lists issues, opens none).
+  # issue logic (read-only: lists issues, opens none). It shares the release concurrency group,
+  # so it must run after e2e-dry-run: two holders of one group inside a single run get cancelled
+  # as a deadlock.
   listing-dry-run:
-    needs: [test]
+    needs: [test, e2e-dry-run]
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       contents: read
