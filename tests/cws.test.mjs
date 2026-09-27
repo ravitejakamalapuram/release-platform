@@ -90,3 +90,38 @@ test('publish rejects unexpected states', async () => {
   const f = fakeFetch([{ body: { state: 'REJECTED' } }]);
   await assert.rejects(publish({ ...base, fetchImpl: f }), /did not accept the submission.*REJECTED/);
 });
+
+test('publish defaults to DEFAULT_PUBLISH (unchanged from today)', async () => {
+  const f = fakeFetch([{ body: { state: 'PENDING_REVIEW' } }]);
+  await publish({ ...base, fetchImpl: f });
+  assert.deepEqual(JSON.parse(f.calls[0].body), { publishType: 'DEFAULT_PUBLISH' });
+});
+
+test('publish sends STAGED_PUBLISH when publishType is "staged"', async () => {
+  const f = fakeFetch([{ body: { state: 'STAGED' } }]);
+  await publish({ ...base, publishType: 'staged', fetchImpl: f });
+  assert.deepEqual(JSON.parse(f.calls[0].body), { publishType: 'STAGED_PUBLISH' });
+});
+
+test('publish rejects an unknown publishType', async () => {
+  await assert.rejects(publish({ ...base, publishType: 'bogus', fetchImpl: fakeFetch([]) }), /Unknown publish_type "bogus"/);
+});
+
+test('release forwards publishType to publish()', async () => {
+  const f = fakeFetch([
+    { body: { itemId: I, publishedItemRevisionStatus: published('1.2.3') } },
+    { body: { itemId: I, crxVersion: '1.3.0', uploadState: 'SUCCEEDED' } },
+    { body: { itemId: I, state: 'STAGED' } },
+    { body: { itemId: I, publishedItemRevisionStatus: published('1.2.3'), submittedItemRevisionStatus: published('1.3.0', 'STAGED') } },
+  ]);
+  const res = await release({ ...base, zip: Buffer.from('zip'), version: '1.3.0', publishType: 'staged', fetchImpl: f });
+  assert.equal(res.published.state, 'STAGED');
+  assert.deepEqual(JSON.parse(f.calls[2].body), { publishType: 'STAGED_PUBLISH' });
+});
+
+test('release with submit=false never resolves publishType (draft upload is unaffected)', async () => {
+  const f = fakeFetch([{ body: {} }, { body: { uploadState: 'SUCCEEDED', crxVersion: '0.1.0' } }, { body: {} }]);
+  const res = await release({ ...base, zip: Buffer.from('z'), version: '0.1.0', submit: false, publishType: 'bogus', fetchImpl: f });
+  assert.equal(res.published, null);
+  assert.equal(f.calls.length, 3);
+});

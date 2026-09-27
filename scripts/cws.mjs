@@ -26,6 +26,14 @@ const PUBLISH_OK = new Set(['PENDING_REVIEW', 'STAGED', 'PUBLISHED', 'PUBLISHED_
 
 export class StoreError extends Error {}
 
+export const PUBLISH_TYPES = { default: 'DEFAULT_PUBLISH', staged: 'STAGED_PUBLISH' };
+
+function resolvePublishType(publishType = 'default') {
+  const mapped = PUBLISH_TYPES[publishType];
+  if (!mapped) throw new StoreError(`Unknown publish_type "${publishType}" (expected ${Object.keys(PUBLISH_TYPES).join('|')})`);
+  return mapped;
+}
+
 /** Turn raw CWS failures into actionable messages. */
 export function explainCwsError(err, item) {
   const msg = err?.message ?? String(err);
@@ -100,10 +108,10 @@ function latestSubmittedVersion(status) {
   return status?.submittedItemRevisionStatus?.distributionChannels?.[0]?.crxVersion;
 }
 
-export async function publish({ publisher, item, token, fetchImpl }) {
+export async function publish({ publisher, item, token, fetchImpl, publishType = 'default' }) {
   let res;
   try {
-    res = await request({ method: 'POST', url: urls.publish(publisher, item), token, json: { publishType: 'DEFAULT_PUBLISH' }, fetchImpl });
+    res = await request({ method: 'POST', url: urls.publish(publisher, item), token, json: { publishType: resolvePublishType(publishType) }, fetchImpl });
   } catch (err) {
     throw explainCwsError(err, item);
   }
@@ -114,7 +122,7 @@ export async function publish({ publisher, item, token, fetchImpl }) {
 }
 
 /** Full release: preflight -> upload -> publish (optional) -> status. */
-export async function release({ publisher, item, token, zip, version, submit = true, fetchImpl, sleep, pollMs }) {
+export async function release({ publisher, item, token, zip, version, submit = true, fetchImpl, sleep, pollMs, publishType = 'default' }) {
   const before = await fetchStatus({ publisher, item, token, fetchImpl }).catch((err) => {
     throw explainCwsError(err, item);
   });
@@ -123,7 +131,7 @@ export async function release({ publisher, item, token, zip, version, submit = t
   if (uploaded.crxVersion && uploaded.crxVersion !== version) {
     throw new StoreError(`Uploaded package reports version ${uploaded.crxVersion}, expected ${version}`);
   }
-  const published = submit ? await publish({ publisher, item, token, fetchImpl }) : null;
+  const published = submit ? await publish({ publisher, item, token, fetchImpl, publishType }) : null;
   const after = await fetchStatus({ publisher, item, token, fetchImpl });
   return { uploaded, published, status: after };
 }
@@ -150,6 +158,7 @@ async function cli() {
       zip: { type: 'string' },
       version: { type: 'string' },
       'no-publish': { type: 'boolean', default: false },
+      'publish-type': { type: 'string', default: 'default' },
     },
   });
   const publisher = values.publisher ?? process.env.CWS_PUBLISHER_ID;
@@ -180,7 +189,7 @@ async function cli() {
   if (!values.zip || !values.version) throw new Error('--zip and --version are required for release');
 
   const submit = !values['no-publish'];
-  const result = await release({ publisher, item, token, zip: readFileSync(values.zip), version: values.version, submit });
+  const result = await release({ publisher, item, token, zip: readFileSync(values.zip), version: values.version, submit, publishType: values['publish-type'] });
   const d = describeStatus(result.status);
   log(`Uploaded ${item} v${result.uploaded.crxVersion ?? values.version}: ${result.uploaded.uploadState}`);
   if (result.published) log(`Submitted for review: ${result.published.state}`);
