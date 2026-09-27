@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { bumpVersion, detectBump, latestTag, planVersion, releaseNotes, versionCode } from '../scripts/version.mjs';
+import { auditTrailBlock, bumpVersion, detectBump, latestTag, planVersion, releaseNotes, versionCode } from '../scripts/version.mjs';
 
 const c = (subject, body = '') => ({ subject, body });
 
@@ -69,4 +69,27 @@ test('releaseNotes groups commits and skips merges', () => {
   assert.match(md, /### Other\n- docs: z/);
   assert.doesNotMatch(md, /Merge pull request/);
   assert.equal(releaseNotes([]), '_No notable changes._');
+});
+
+test('auditTrailBlock is empty when there is no approval id', () => {
+  assert.equal(auditTrailBlock(), '');
+  assert.equal(auditTrailBlock({}), '');
+  // Run id/url alone, with no approval id, still produce nothing: the block only exists
+  // to carry approval_id, and run info rides along with it (see plan Global Constraints).
+  assert.equal(auditTrailBlock({ runId: '123', runUrl: 'https://github.com/x/y/actions/runs/123' }), '');
+});
+
+test('auditTrailBlock renders approval id with run id/url', () => {
+  const block = auditTrailBlock({ approvalId: 'appr-abc123', runId: '456', runUrl: 'https://github.com/x/y/actions/runs/456' });
+  assert.match(block, /appr-abc123/);
+  assert.match(block, /456/);
+  assert.match(block, /https:\/\/github\.com\/x\/y\/actions\/runs\/456/);
+});
+
+test('auditTrailBlock does not break on markdown-adjacent characters in approval id', () => {
+  const block = auditTrailBlock({ approvalId: 'weird `--- backtick` id\nwith a newline', runId: '1', runUrl: 'https://x' });
+  // The raw value is recorded verbatim on its own line; it must not introduce a stray
+  // "---" heading break or unescaped backtick block that corrupts the rest of notes.md.
+  assert.equal(block.split('\n').filter((l) => l.trim() === '---').length, 1);
+  assert.match(block, /weird `--- backtick` id/);
 });
