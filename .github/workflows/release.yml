@@ -36,6 +36,14 @@ on:
         description: 'Advanced: release-platform ref for the helper scripts. Default: the ref this workflow was called at.'
         type: string
         default: ''
+      approval_id:
+        description: 'Optional audit-only identifier for an external approval record. Recorded verbatim in the GitHub Release notes (run id/url alongside it) if set; NEVER verified here.'
+        type: string
+        default: ''
+      publish_type:
+        description: 'Chrome Web Store publish type: default (submit for review normally) or staged (STAGED_PUBLISH, gradual rollout).'
+        type: string
+        default: 'default'
     outputs:
       version:
         description: 'The released version (X.Y.Z)'
@@ -201,9 +209,13 @@ jobs:
         env:
           BUMP: ${{ inputs.bump }}
           BASELINE: ${{ steps.config.outputs.baseline }}
+          APPROVAL_ID: ${{ inputs.approval_id }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           args=(--bump "$BUMP" --notes-file "$RUNNER_TEMP/notes.md")
           if [ -n "$BASELINE" ]; then args+=(--baseline "$BASELINE"); fi
+          if [ -n "$APPROVAL_ID" ]; then args+=(--approval-id "$APPROVAL_ID" --run-id "$RUN_ID" --run-url "$RUN_URL"); fi
           node "$GITHUB_WORKSPACE/platform/scripts/version.mjs" "${args[@]}"
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
@@ -541,8 +553,9 @@ jobs:
           ITEM: ${{ steps.target.outputs.item_id }}
           VERSION: ${{ needs.plan.outputs.version }}
           SUBMIT: ${{ steps.target.outputs.publish }}
+          PUBLISH_TYPE: ${{ inputs.publish_type }}
         run: |
-          args=(release --item "$ITEM" --zip "$(ls dist/*.zip)" --version "$VERSION")
+          args=(release --item "$ITEM" --zip "$(ls dist/*.zip)" --version "$VERSION" --publish-type "$PUBLISH_TYPE")
           if [ "$SUBMIT" != "true" ]; then args+=(--no-publish); fi
           node platform/scripts/cws.mjs "${args[@]}"
 

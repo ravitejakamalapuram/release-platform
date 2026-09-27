@@ -114,6 +114,20 @@ export function releaseNotes(commits) {
   return parts.length ? parts.join('\n\n') : '_No notable changes._';
 }
 
+/**
+ * Optional audit-trail block appended to the generated release notes: purely a recorded
+ * string plus this run's own id/url, never verified here (verification, if any, happens
+ * before this workflow is ever dispatched). Empty when there is no approval id, so a caller
+ * that never sets approval_id gets byte-identical notes to before this existed.
+ */
+export function auditTrailBlock({ approvalId, runId, runUrl } = {}) {
+  if (!approvalId) return '';
+  const lines = [`- Approval: ${approvalId}`];
+  if (runId) lines.push(`- Run: ${runId}${runUrl ? ` (${runUrl})` : ''}`);
+  else if (runUrl) lines.push(`- Run: ${runUrl}`);
+  return ['---', '### Audit', ...lines].join('\n');
+}
+
 // ---------- git plumbing (not unit tested; thin) ----------
 
 function git(args, cwd) {
@@ -139,6 +153,9 @@ async function cli() {
       baseline: { type: 'string' },
       cwd: { type: 'string', default: '.' },
       'notes-file': { type: 'string' },
+      'approval-id': { type: 'string', default: '' },
+      'run-id': { type: 'string', default: '' },
+      'run-url': { type: 'string', default: '' },
     },
   });
   const tag = latestTag(git(['tag', '--list', 'v*'], values.cwd).split('\n'));
@@ -155,7 +172,9 @@ async function cli() {
   setOutput('bump', plan.bump);
   if (values['notes-file']) {
     const { writeFileSync } = await import('node:fs');
-    writeFileSync(values['notes-file'], `${releaseNotes(commits)}\n`);
+    const audit = auditTrailBlock({ approvalId: values['approval-id'], runId: values['run-id'], runUrl: values['run-url'] });
+    const body = audit ? `${releaseNotes(commits)}\n\n${audit}\n` : `${releaseNotes(commits)}\n`;
+    writeFileSync(values['notes-file'], body);
   }
 }
 
