@@ -89,6 +89,30 @@ jobs:
       bump: patch
       directory: tests/fixtures/chrome-app
       store_preflight: false   # the fixture's item id is fake; real apps keep the read-only preflight
+      approval_id: ci-fixture-audit-test-id
+      publish_type: staged     # dry run never calls cws.mjs publish(); this only proves the
+                                # input is accepted end to end (unit-tested behavior lives in
+                                # tests/cws.test.mjs).
+
+  # Asserts the approval_id + run id set above actually reached the generated release notes,
+  # which is the only inspectable evidence in a dry run (no GitHub Release is created).
+  verify-audit-trail:
+    name: Verify audit trail recorded
+    needs: [e2e-dry-run]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-notes
+          path: notes
+      - name: Assert approval_id and run id are recorded
+        run: |
+          cat notes/notes.md
+          grep -q "ci-fixture-audit-test-id" notes/notes.md
+          grep -q "${{ github.run_id }}" notes/notes.md
 
   # Dry run of the listing workflow against the fixture: validation, bundling and the checklist
   # issue logic (read-only: lists issues, opens none). It shares the release concurrency group,
