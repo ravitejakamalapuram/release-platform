@@ -256,6 +256,8 @@ Run the app repo's **release** workflow (Actions → release → Run workflow):
 | `bump` | `auto` (default), `patch`, `minor`, `major` |
 | `dry_run` | Validate, test, build, package, authenticate and run the **read-only store preflight** — but no upload, tag or release |
 | `targets` | Only these target types, e.g. `chrome` (empty = all) |
+| `approval_id` | Optional audit-only string, recorded verbatim (with this run's id/url) in the GitHub Release notes when set. Never verified here — see [Audit trail](#audit-trail). |
+| `publish_type` | Chrome Web Store publish type: `default` (submit for review, default) or `staged` (`STAGED_PUBLISH`, for a gradual rollout) |
 
 **Versioning.** The next version comes from the highest strict `vX.Y.Z` tag. With `auto`, the
 [conventional commits](https://www.conventionalcommits.org) since that tag decide: `feat` → minor,
@@ -291,6 +293,15 @@ them — only meant for fixtures with fake store ids.
 
 The job summary shows one row per target (version and store result). The GitHub Release carries
 the zip / AAB and the generated notes.
+
+**Audit trail.** `approval_id` is a pure string the caller supplies at dispatch time; this
+workflow never checks it against anything. When set, it is recorded — together with this run's
+own `github.run_id` and `run_url` — in the generated release notes (`notes.md`), which become the
+GitHub Release body. That file is written before the dry-run/real-release fork, so it is also
+inspectable as the `release-notes` build artifact on a `dry_run: true` run. Verifying that an
+`approval_id` corresponds to a real, completed approval is a separate concern (an
+`appforge approval verify` step that runs *before* this workflow is dispatched, on a machine that
+can reach the approval system) — this repo has no way to reach that system and does not try to.
 
 ## Promoting (Google Play)
 
@@ -435,8 +446,11 @@ build job, before packaging), `version_file` (optional baseline source for untag
 | `listing` | none | fastlane-style metadata directory; see [Store listings](#store-listings) |
 
 Reusable workflow inputs besides the above: `directory` (where `release.yaml` lives; tags stay
-repo-wide) and `platform_ref` (advanced; which release-platform commit's scripts to use — by
-default the exact commit of the workflow you called, read from the OIDC token's `job_workflow_sha`).
+repo-wide), `platform_ref` (advanced; which release-platform commit's scripts to use — by default
+the exact commit of the workflow you called, read from the OIDC token's `job_workflow_sha`),
+`approval_id` (audit-only; see [Audit trail](#audit-trail)) and `publish_type` (Chrome
+`default`/`staged`). None of these four are `release.yaml` fields: they are properties of one
+release *run*, supplied at `workflow_dispatch` time, not of the app's release configuration.
 
 ## Troubleshooting
 
