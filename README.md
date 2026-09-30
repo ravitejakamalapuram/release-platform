@@ -346,10 +346,14 @@ user-facing change merged to `main` ships without anyone pressing a button.
 push to main -> gate -> release (test, sign, build, publish, tag) -> promote to production (Google Play)
 ```
 
-- **Gate** (`scripts/release-gate.mjs`, unit-tested): releases only when the head commit is a
-  conventional commit of type `feat`, `fix`, `perf` or `revert` (`fix(scope)!:` counts). `chore`, `docs`,
-  `ci`, `test`, `style`, `build`, `refactor` and merge commits never release on their own. Only the first
-  line of the message is read. Override the set with `release_types`.
+- **Release window** (`scripts/release-window.mjs`, unit-tested) batches a burst of merges into one release:
+  - A **push** to `main` releases only an *urgent* unreleased commit (`hotfix:` or `hotfix(scope):`).
+  - The **hourly schedule** releases once when there is at least one unreleased user-facing commit
+    (conventional `feat`, `fix`, `perf`, `revert`; `chore`, `docs`, `ci`, `test`, `style`, `build`,
+    `refactor` and merge commits never count) **and** the last `v*` tag is at least `min_interval_hours`
+    old (default 3).
+  - `fix!:` is a breaking-change marker (bigger version bump), not urgency; use `hotfix:` to skip the wait.
+  - `scripts/release-gate.mjs` holds the per-commit rule. Override the set with `release_types`.
 - **Kill switch:** set the app repo's Actions variable `RELEASE_HOLD` to `true` (Settings -> Secrets and
   variables -> Actions -> Variables). The caller passes it as `hold`; nothing releases until it is unset.
   It wins over `force`.
@@ -363,8 +367,8 @@ push to main -> gate -> release (test, sign, build, publish, tag) -> promote to 
 Add it to an app with `templates/auto-release-caller.yml` (copy to `.github/workflows/auto-release.yml`).
 Keep the manual `release.yml` / `promote.yml` callers for hotfixes and rollbacks.
 
-Not yet built (deliberately): batching a burst of merges into one release, a soak period that widens a
-staged rollout automatically, and crash-driven automatic hotfixes.
+Not yet built (deliberately): a soak period that widens a staged rollout automatically, and crash-driven
+automatic hotfixes.
 
 ## Store listings
 
