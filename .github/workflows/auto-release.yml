@@ -1,0 +1,128 @@
+# Reusable AUTOMATIC release policy: gate -> release -> (Play) promote.
+#
+# Callers (see templates/auto-release-caller.yml) trigger it on push to main and need:
+#   permissions: { contents: write, id-token: write }
+#   secrets: inherit
+#
+# What it does
+#   1. gate     - decides from the head commit whether this push is user-facing (scripts/release-gate.mjs)
+#                 and whether the repository-level kill switch (caller variable RELEASE_HOLD) is on.
+#   2. release  - the normal release.yml pipeline (validate, test, version, build, publish, tag).
+#   3. promote  - Google Play only: moves the new build from the upload track to production
+#                 at `rollout_fraction` (default 1 = 100%; use e.g. 0.2 for a staged rollout).
+#
+# The policy lives here so every app gets it from one place. Apps only choose inputs.
+name: auto-release
+
+on:
+  workflow_call:
+    inputs:
+      commit_message:
+        description: 'Head commit message (caller passes github.event.head_commit.message)'
+        type: string
+        default: ''
+      hold:
+        description: 'Kill switch. Caller passes vars.RELEASE_HOLD; "true" pauses automatic releasing.'
+        type: string
+        default: ''
+      force:
+        description: 'Release even if the head commit is not user-facing'
+        type: boolean
+        default: false
+      release_types:
+        description: 'Comma list of conventional-commit types that trigger a release'
+        type: string
+        default: 'feat,fix,perf,revert'
+      bump:
+        description: 'auto (conventional commits) | patch | minor | major'
+        type: string
+        default: auto
+      dry_run:
+        description: 'Run everything except uploads, tags and promotion'
+        type: boolean
+        default: false
+      promote:
+        description: 'Google Play: promote to production after release. Set false for store-upload-only apps.'
+        type: boolean
+        default: true
+      from_track:
+        type: string
+        default: internal
+      to_track:
+        type: string
+        default: production
+      rollout_fraction:
+        description: 'Production rollout share in (0,1]. 1 = 100%. Early-stage default is 100%; lower it for a staged rollout.'
+        type: string
+        default: '1'
+      platform_ref:
+        description: 'Advanced: release-platform ref used for the helper scripts and nested workflows'
+        type: string
+        default: ''
+    outputs:
+      released:
+        description: 'true if a release ran'
+        value: ${{ jobs.gate.outputs.go }}
+      tag:
+        description: 'The release tag (vX.Y.Z) when one was created'
+        value: ${{ jobs.release.outputs.tag }}
+
+concurrency:
+  group: release-platform-auto-${{ github.repository }}
+  cancel-in-progress: false   # never cancel a release in flight; queue the next
+
+permissions: {}
+
+jobs:
+  gate:
+    name: Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      go: ${{ steps.decide.outputs.go }}
+    steps:
+      - name: Checkout release-platform scripts
+        uses: actions/checkout@v7
+        with:
+          repository: ravitejakamalapuram/release-platform
+          ref: ${{ inputs.platform_ref || 'v2' }}
+          path: platform
+      - name: Decide
+        id: decide
+        env:
+          SUBJECT: ${{ inputs.commit_message }}
+          HOLD: ${{ inputs.hold }}
+          FORCE: ${{ inputs.force }}
+          TYPES: ${{ inputs.release_types }}
+        run: node "$GITHUB_WORKSPACE/platform/scripts/release-gate.mjs"
+
+  release:
+    name: Release
+    needs: gate
+    if: needs.gate.outputs.go == 'true'
+    permissions:
+      contents: write
+      id-token: write
+    uses: ravitejakamalapuram/release-platform/.github/workflows/release.yml@v2
+    with:
+      bump: ${{ inputs.bump }}
+      dry_run: ${{ inputs.dry_run }}
+      platform_ref: ${{ inputs.platform_ref }}
+    secrets: inherit
+
+  promote:
+    name: Promote
+    needs: release
+    if: inputs.promote && !inputs.dry_run
+    permissions:
+      contents: read
+      id-token: write
+    uses: ravitejakamalapuram/release-platform/.github/workflows/promote.yml@v2
+    with:
+      action: promote
+      from_track: ${{ inputs.from_track }}
+      to_track: ${{ inputs.to_track }}
+      user_fraction: ${{ inputs.rollout_fraction == '1' && '' || inputs.rollout_fraction }}
+      platform_ref: ${{ inputs.platform_ref }}
