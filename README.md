@@ -337,6 +337,35 @@ gh api "repos/$REPO/environments/production" --jq '.protection_rules'   # verify
 for public repos; private repos need a paid plan (otherwise the environment exists but cannot
 enforce approval). Use the `environment` input to pick another name.
 
+## Automatic releases
+
+`auto-release.yml` is the reusable **policy** layer on top of `release.yml` / `promote.yml`: every
+user-facing change merged to `main` ships without anyone pressing a button.
+
+```
+push to main -> gate -> release (test, sign, build, publish, tag) -> promote to production (Google Play)
+```
+
+- **Gate** (`scripts/release-gate.mjs`, unit-tested): releases only when the head commit is a
+  conventional commit of type `feat`, `fix`, `perf` or `revert` (`fix(scope)!:` counts). `chore`, `docs`,
+  `ci`, `test`, `style`, `build`, `refactor` and merge commits never release on their own. Only the first
+  line of the message is read. Override the set with `release_types`.
+- **Kill switch:** set the app repo's Actions variable `RELEASE_HOLD` to `true` (Settings -> Secrets and
+  variables -> Actions -> Variables). The caller passes it as `hold`; nothing releases until it is unset.
+  It wins over `force`.
+- **Force:** the caller's `workflow_dispatch` has a `force` checkbox to release the current `main` when the
+  last commit was not user-facing.
+- **Promotion:** Google Play only. The build uploaded to the `internal` track moves to `production` at
+  `rollout_fraction` (default `1` = 100% while apps are early; lower it, e.g. `0.2`, for a staged rollout
+  and finish it with `promote.yml` action `complete`). Set `promote: false` for upload-only apps.
+- **Serialised:** one automatic release per repo at a time, never cancelled in flight.
+
+Add it to an app with `templates/auto-release-caller.yml` (copy to `.github/workflows/auto-release.yml`).
+Keep the manual `release.yml` / `promote.yml` callers for hotfixes and rollbacks.
+
+Not yet built (deliberately): batching a burst of merges into one release, a soak period that widens a
+staged rollout automatically, and crash-driven automatic hotfixes.
+
 ## Store listings
 
 Keep each store listing (descriptions, screenshots, promo images) in the repo, next to the code.
