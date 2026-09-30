@@ -5,8 +5,10 @@
 #   secrets: inherit
 #
 # What it does
-#   1. gate     - decides from the head commit whether this push is user-facing (scripts/release-gate.mjs)
-#                 and whether the repository-level kill switch (caller variable RELEASE_HOLD) is on.
+#   1. gate     - the release WINDOW (scripts/release-window.mjs): batches a burst of merges into one release.
+#                 Pushes release only `hotfix:` commits at once; the hourly schedule releases once when there is
+#                 at least one unreleased user-facing commit and the last release is >= min_interval_hours old.
+#                 Also honours the kill switch (caller variable RELEASE_HOLD).
 #   2. release  - the normal release.yml pipeline (validate, test, version, build, publish, tag).
 #   3. promote  - Google Play only: moves the new build from the upload track to production
 #                 at `rollout_fraction` (default 1 = 100%; use e.g. 0.2 for a staged rollout).
@@ -18,9 +20,17 @@ on:
   workflow_call:
     inputs:
       commit_message:
-        description: 'Head commit message (caller passes github.event.head_commit.message)'
+        description: 'Deprecated and ignored (the gate now reads git history). Kept so existing callers keep working.'
         type: string
         default: ''
+      trigger:
+        description: 'Caller passes github.event_name (push | schedule | workflow_dispatch). Pushes release only hotfix: commits.'
+        type: string
+        default: 'schedule'
+      min_interval_hours:
+        description: 'Minimum hours between automatic releases (batching window)'
+        type: string
+        default: '3'
       hold:
         description: 'Kill switch. Caller passes vars.RELEASE_HOLD; "true" pauses automatic releasing.'
         type: string
@@ -30,7 +40,7 @@ on:
         type: boolean
         default: false
       release_types:
-        description: 'Comma list of conventional-commit types that trigger a release'
+        description: 'Comma list of conventional-commit types that count as releasable'
         type: string
         default: 'feat,fix,perf,revert'
       bump:
@@ -83,20 +93,26 @@ jobs:
     outputs:
       go: ${{ steps.decide.outputs.go }}
     steps:
+      - name: Checkout app repository (full history and tags)
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
       - name: Checkout release-platform scripts
         uses: actions/checkout@v7
         with:
           repository: ravitejakamalapuram/release-platform
           ref: ${{ inputs.platform_ref || 'v2' }}
-          path: platform
+          path: .release-platform
       - name: Decide
         id: decide
         env:
-          SUBJECT: ${{ inputs.commit_message }}
+          TRIGGER: ${{ inputs.trigger }}
+          MIN_INTERVAL_HOURS: ${{ inputs.min_interval_hours }}
           HOLD: ${{ inputs.hold }}
           FORCE: ${{ inputs.force }}
           TYPES: ${{ inputs.release_types }}
-        run: node "$GITHUB_WORKSPACE/platform/scripts/release-gate.mjs"
+        run: node "$GITHUB_WORKSPACE/.release-platform/scripts/release-window.mjs"
 
   release:
     name: Release
