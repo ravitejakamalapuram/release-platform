@@ -108,6 +108,10 @@ into shell. When changing a workflow here, keep the table true.
 - **Preflight checks.** Chrome: refuses early if an item is already in review or the store has an
   equal/higher version. Play: refuses if any track already has an equal/higher versionCode, and
   verifies the uploaded bundle carries the expected versionCode.
+- **Read back, not trusted.** A 200 from Play is not proof. After every upload, promote, rollout,
+  halt or complete, a separate step opens a fresh read-only edit (deleted, never committed) and
+  checks that the track holds the intended release (version codes, status, user fraction). On a
+  mismatch the job fails with `RELEASE_MISMATCH` and the differences, and no tag is created.
 
 ## Onboarding
 
@@ -501,6 +505,7 @@ release *run*, supplied at `workflow_dispatch` time, not of the app's release co
 | Play: `versionCode N is not higher than M` | Play already has a larger code (often from an older scheme). Tag at or above that version (`M = MAJOR*1e6+MINOR*1e3+PATCH`) or use a bigger bump. |
 | Play: `The bundle has versionCode 1, expected …` | Add the Gradle version snippet above. |
 | Play: `Only releases with status draft may be created on draft app` | Set `release_status: draft` until the first manual release. |
+| Play: `RELEASE_MISMATCH: … does not hold …` | Play acknowledged the change, but the track read back afterwards differs (listed above the error). Run `play.mjs tracks` or open Play Console before re-running: if the bundle did land, its versionCode is used, and a re-run of the upload fails. |
 | Play warning: changes were not sent for review | The app needs manual review submission: Play Console → Publishing overview → Send for review. |
 | `Android signing secrets missing` | Add the four secrets and make sure the caller passes `secrets: inherit`. |
 | `Tag vX.Y.Z already exists` | A previous run already tagged. Pass a bigger bump or delete the stale tag. |

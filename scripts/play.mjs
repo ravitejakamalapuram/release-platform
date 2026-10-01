@@ -11,6 +11,7 @@
 //   GOOGLE_ACCESS_TOKEN=... node scripts/play.mjs preflight --package com.x --version-code 1002003   (read-only)
 //   GOOGLE_ACCESS_TOKEN=... node scripts/play.mjs listing  --package com.x --bundle listings/android-0 [--dry-run]
 //   GOOGLE_ACCESS_TOKEN=... node scripts/play.mjs verify-listing --package com.x --bundle listings/android-0   (read-only; exit 1 on mismatch)
+//   GOOGLE_ACCESS_TOKEN=... node scripts/play.mjs verify-track --package com.x --track production --version-codes 1002003 --status inProgress --fraction 0.2 [--out verify.json]   (read-only; exit 1 on mismatch)
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -333,6 +334,48 @@ export async function listTracks({ pkg, token, fetchImpl }) {
   return result.tracks ?? [];
 }
 
+/**
+ * The verifier's own comparison of an intended release against the tracks Play reports (APP-295).
+ * Deliberately does not reuse the writers' helpers (latestRelease, buildRelease): a release must
+ * not be verified by the code that made it. `intended` is { track, versionCodes, status, userFraction }.
+ * Returns one human-readable line per difference; [] means Play holds the intended release.
+ */
+export function diffTrack(intended, tracks) {
+  const { track, status } = intended;
+  const want = [...intended.versionCodes].map(String).sort();
+  const t = (tracks ?? []).find((x) => x.track === track);
+  const seen = t ? describeTracks([t])[0] ?? `${track}: (no releases)` : `${track}: (track not found)`;
+  const rel = (t?.releases ?? []).find((r) => {
+    const have = (r.versionCodes ?? []).map(String).sort();
+    return have.length === want.length && have.every((c, i) => c === want[i]);
+  });
+  if (!rel) return [`${track}: no release with versionCodes [${want.join(', ')}] (Play has ${seen})`];
+  const out = [];
+  if (rel.status !== status) out.push(`${track}: status is ${rel.status}, expected ${status} (Play has ${seen})`);
+  const staged = status === 'inProgress' || status === 'halted';
+  const have = rel.userFraction;
+  if (staged && !(typeof have === 'number' && Math.abs(have - intended.userFraction) <= 1e-6)) {
+    out.push(`${track}: user fraction is ${have ?? 'unset'}, expected ${intended.userFraction} (Play has ${seen})`);
+  }
+  if (!staged && have !== undefined) out.push(`${track}: user fraction is ${have}, expected none for a ${status} release (Play has ${seen})`);
+  return out;
+}
+
+/**
+ * Read the track back from Play in a fresh edit that is never committed (always deleted) and
+ * compare it with the intended release. Run it as its own step after upload / promote / rollout:
+ * a 200 on the PUT and the commit is not proof that Play kept the release. Read-only by construction.
+ */
+export async function verifyTrack({ pkg, token, fetchImpl, track, versionCodes, status, userFraction }) {
+  if (!track || !versionCodes?.length || !status) throw new Error('verifyTrack needs track, versionCodes and status');
+  if ((status === 'inProgress' || status === 'halted') && !(userFraction > 0 && userFraction < 1)) {
+    throw new Error(`An intended ${status} release needs a user fraction between 0 and 1 (exclusive), got ${userFraction}`);
+  }
+  const { result } = await withEdit({ pkg, token, fetchImpl, readOnly: true }, (id) => request({ method: 'GET', url: urls.tracks(pkg, id), token, fetchImpl }));
+  const mismatches = diffTrack({ track, versionCodes, status, userFraction }, result.tracks ?? []);
+  return { ok: mismatches.length === 0, mismatches };
+}
+
 export function describeTracks(tracks) {
   return tracks
     .filter((t) => (t.releases ?? []).length)
@@ -347,6 +390,12 @@ function reportCommit(commit) {
     warning('Play could not send these changes for review automatically. Open Play Console > Publishing overview and click "Send changes for review".');
   }
   return commit?.sentForReview === false ? 'COMMITTED_NOT_SENT_FOR_REVIEW' : 'COMMITTED';
+}
+
+/** Step outputs naming the release a writer chose, for the separate verify-track step. */
+function reportReleaseChosen(result) {
+  setOutput('version_codes', (result.versionCodes ?? []).join(','));
+  setOutput('user_fraction', result.userFraction === undefined ? '' : String(result.userFraction));
 }
 
 async function cli() {
@@ -364,6 +413,8 @@ async function cli() {
       'version-code': { type: 'string' },
       'notes-file': { type: 'string' },
       bundle: { type: 'string' },
+      'version-codes': { type: 'string' },
+      out: { type: 'string' },
       'dry-run': { type: 'boolean', default: false },
       status: { type: 'string', default: 'completed' },
     },
@@ -388,6 +439,7 @@ async function cli() {
     case 'promote': {
       const { result, commit } = await promote({ pkg, token, from: values.from ?? 'internal', to: values.to ?? 'production', fraction });
       out = `${reportCommit(commit)}: ${pkg} ${result.name} -> ${result.track} [${result.status}${result.userFraction ? ` ${result.userFraction * 100}%` : ''}]`;
+      reportReleaseChosen(result);
       break;
     }
     case 'rollout':
@@ -395,6 +447,7 @@ async function cli() {
     case 'complete': {
       const { result, commit } = await changeRollout({ pkg, token, track: values.track ?? 'production', action: command, fraction });
       out = `${reportCommit(commit)}: ${pkg} ${result.name} on ${result.track} [${result.status}${result.userFraction ? ` ${result.userFraction * 100}%` : ''}]`;
+      reportReleaseChosen(result);
       break;
     }
     case 'preflight': {
@@ -433,13 +486,30 @@ async function cli() {
       out = `LISTING_VERIFIED: ${pkg} matches the repo (fingerprint ${bundle.fingerprint})`;
       break;
     }
+    case 'verify-track': {
+      if (!values.track || !values['version-codes']) throw new Error('--track and --version-codes are required');
+      const intended = { track: values.track, versionCodes: values['version-codes'].split(',').map((c) => c.trim()).filter(Boolean), status: values.status, userFraction: fraction };
+      const { ok, mismatches } = await verifyTrack({ pkg, token, ...intended });
+      if (values.out) writeFileSync(values.out, `${JSON.stringify({ outcome: ok ? 'verified' : 'mismatch', package: pkg, intended, mismatches }, null, 2)}\n`);
+      const what = `${intended.track} [${intended.versionCodes.join(', ')}] ${intended.status}${fraction !== undefined && intended.status !== 'completed' ? ` ${fraction * 100}%` : ''}`;
+      if (!ok) {
+        for (const m of mismatches) log(`  ${m}`);
+        setOutput('result', `RELEASE_MISMATCH: ${pkg} ${what}`);
+        throw new StoreError(
+          `RELEASE_MISMATCH: ${pkg} - Play does not hold ${what} after the commit (differences above). ` +
+            'Check `play.mjs tracks` / Play Console before re-running: the versionCode may already be used.',
+        );
+      }
+      out = `RELEASE_VERIFIED: ${pkg} ${what} (read back from Play)`;
+      break;
+    }
     case 'tracks': {
       const lines = describeTracks(await listTracks({ pkg, token }));
       out = lines.length ? lines.join('\n') : '(no releases on any track)';
       break;
     }
     default:
-      throw new Error(`Unknown command "${command}" (expected upload|preflight|promote|rollout|halt|complete|tracks|listing|verify-listing)`);
+      throw new Error(`Unknown command "${command}" (expected upload|preflight|promote|rollout|halt|complete|tracks|listing|verify-listing|verify-track)`);
   }
   log(out);
   setOutput('result', out.split('\n')[0]);
