@@ -1,6 +1,12 @@
 # Copy to .github/workflows/listing.yml in your app repo (needs `listing:` on a target in
 # release.yaml). A merge to main that changes the listing files syncs automatically (dry run
 # first); you can still run it by hand from the Actions tab.
+# The daily schedule is a read-only drift check (APP-290): it compares the live Play listing with
+# the repo, changes nothing, and opens ONE 'listing-verify' issue if they differ (e.g. someone
+# edited the Play Console by hand). It closes that issue itself once they match again.
+# It also reads the PUBLIC store pages (APP-296): a listing Play accepted, or a Chrome checklist a
+# person closed, is only 'listing-verified' once the public page shows it; 7 days without that
+# fails the run (Play: 'listing-verify' issue; Chrome: the checklist is reopened with the diff).
 name: listing
 
 on:
@@ -15,6 +21,8 @@ on:
       - '!android/fastlane/metadata/android/*/changelogs/**'
       - 'chrome-store/**'
       - 'extension/store-assets/**'
+  schedule:
+    - cron: '17 3 * * *'
   workflow_dispatch:
     inputs:
       dry_run:
@@ -29,12 +37,26 @@ on:
 permissions: {}
 
 jobs:
-  # Always a dry run first: a listing that fails validation stops here, before the sync job.
-  preview:
+  # Daily drift check: read-only, never writes to a store.
+  drift:
+    if: github.event_name == 'schedule'
     permissions:
       contents: read
-      issues: write     # Chrome: the Developer Dashboard checklist issue
+      issues: write     # 'listing-verify' / 'listing-committed' issues, Chrome checklist
       id-token: write   # Play: keyless Google auth (OIDC -> Workload Identity Federation)
+    uses: ravitejakamalapuram/release-platform/.github/workflows/listing.yml@v2
+    with:
+      dry_run: false
+      verify_only: true
+      targets: ''
+
+  # Always a dry run first: a listing that fails validation stops here, before the sync job.
+  preview:
+    if: github.event_name != 'schedule'
+    permissions:
+      contents: read
+      issues: write
+      id-token: write
     uses: ravitejakamalapuram/release-platform/.github/workflows/listing.yml@v2
     with:
       dry_run: true
@@ -43,7 +65,7 @@ jobs:
   sync:
     needs: preview
     # Merges always sync; a manual run syncs unless it asked for a dry run (the preview above).
-    if: github.event_name == 'push' || inputs.dry_run == false
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false)
     permissions:
       contents: read
       issues: write

@@ -108,6 +108,10 @@ into shell. When changing a workflow here, keep the table true.
 - **Preflight checks.** Chrome: refuses early if an item is already in review or the store has an
   equal/higher version. Play: refuses if any track already has an equal/higher versionCode, and
   verifies the uploaded bundle carries the expected versionCode.
+- **Read back, not trusted.** A 200 from Play is not proof. After every upload, promote, rollout,
+  halt or complete, a separate step opens a fresh read-only edit (deleted, never committed) and
+  checks that the track holds the intended release (version codes, status, user fraction). On a
+  mismatch the job fails with `RELEASE_MISMATCH` and the differences, and no tag is created.
 
 ## Onboarding
 
@@ -435,6 +439,30 @@ workflow); a manual run with `dry_run` ticked stops after the preview.
   **Submit for review**. Each listing version gets one issue, keyed by a content fingerprint.
   Re-runs don't duplicate it, and a newer listing closes an older open issue as superseded.
 
+**4. Verification.** A sync does not count as its own proof. The caller template also runs the
+workflow daily with `verify_only: true`, which changes nothing in the store:
+
+- **Play API read-back:** a fresh read-only edit compares the text and the ordered image SHA-256s
+  with the repo. A mismatch fails the run and opens one `listing-verify` issue per package. The
+  issue closes itself once Play matches again.
+- **Play public page (after review):** the first run that finds Play's API holding a listing
+  opens a `listing-committed` issue for that fingerprint, dated that day. The run then reads
+  `play.google.com/store/apps/details` for each locale and compares the title, the hash of the
+  normalised full description and the screenshot count. When they match, the issue closes with
+  the `listing-verified` label. If they still differ more than 7 days after that date, the run
+  fails and the differences go into the `listing-verify` issue.
+- **Chrome public page:** a person closing the `store-listing` checklist issue means
+  "submitted", not "done". The daily run reads the public detail page and compares the hash of
+  the description and the screenshot count. When they match, it adds `listing-verified`. If the
+  page still differs 7 days after the close, it reopens the issue with the diff and the
+  `listing-verify` label, and the run fails. A `listing-verified` issue is still checked every
+  day: if the page changes later, the issue is reopened at once, with no 7-day grace.
+- Screenshots are counted as distinct images. Play's carousel shows each image once per form
+  factor (the InvTrack page has 15 slots for 5 images).
+- If a public page can't be read or parsed, the result is `VERIFIER_BROKEN` and the run fails.
+  So is a Google consent or region page served to the runner instead of the store page. That
+  never counts as a pass.
+
 **Demo-video checkpoint:** a Chrome listing without `promoVideo` gets one "Demo video needed" issue
 (labels `demo-video`, `agent-ready`). The agent company records the demo; the board uploads it to
 YouTube (unlisted) and sets `promoVideo`. The next listing run closes the issue. A first publish can't
@@ -517,6 +545,7 @@ release *run*, supplied at `workflow_dispatch` time, not of the app's release co
 | Play: `versionCode N is not higher than M` | Play already has a larger code (often from an older scheme). Tag at or above that version (`M = MAJOR*1e6+MINOR*1e3+PATCH`) or use a bigger bump. |
 | Play: `The bundle has versionCode 1, expected …` | Add the Gradle version snippet above. |
 | Play: `Only releases with status draft may be created on draft app` | Set `release_status: draft` until the first manual release. |
+| Play: `RELEASE_MISMATCH: … does not hold …` | Play acknowledged the change, but the track read back afterwards differs (listed above the error). Run `play.mjs tracks` or open Play Console before re-running: if the bundle did land, its versionCode is used, and a re-run of the upload fails. |
 | Play warning: changes were not sent for review | The app needs manual review submission: Play Console → Publishing overview → Send for review. |
 | `Android signing secrets missing` | Add the four secrets and make sure the caller passes `secrets: inherit`. |
 | `Tag vX.Y.Z already exists` | A previous run already tagged. Pass a bigger bump or delete the stale tag. |
