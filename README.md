@@ -419,6 +419,26 @@ Every referenced file must exist inside the repo, as PNG or JPEG.
   **Submit for review**. Each listing version gets one issue, keyed by a content fingerprint.
   Re-runs don't duplicate it, and a newer listing closes an older open issue as superseded.
 
+**4. Verification.** A sync does not count as its own proof. The caller template also runs the
+workflow daily with `verify_only: true`, which changes nothing in the store:
+
+- **Play API read-back:** a fresh read-only edit compares the text and the ordered image SHA-256s
+  with the repo. A mismatch fails the run and opens one `listing-verify` issue per package. The
+  issue closes itself once Play matches again.
+- **Play public page (after review):** the first run that finds Play's API holding a listing
+  opens a `listing-committed` issue for that fingerprint, dated that day. The run then reads
+  `play.google.com/store/apps/details` for each locale and compares the title, the hash of the
+  normalised full description and the screenshot count. When they match, the issue closes with
+  the `listing-verified` label. If they still differ more than 7 days after that date, the run
+  fails and the differences go into the `listing-verify` issue.
+- **Chrome public page:** a person closing the `store-listing` checklist issue means
+  "submitted", not "done". The daily run reads the public detail page and compares the hash of
+  the description and the screenshot count. When they match, it adds `listing-verified`. If the
+  page still differs 7 days after the close, it reopens the issue with the diff and the
+  `listing-verify` label, and the run fails.
+- If a public page can't be read or parsed, the result is `VERIFIER_BROKEN` and the run fails.
+  That never counts as a pass.
+
 **Demo-video checkpoint:** a Chrome listing without `promoVideo` gets one "Demo video needed" issue
 (labels `demo-video`, `agent-ready`). The agent company records the demo; the board uploads it to
 YouTube (unlisted) and sets `promoVideo`. The next listing run closes the issue. A first publish can't

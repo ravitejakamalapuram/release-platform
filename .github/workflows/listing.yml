@@ -13,6 +13,14 @@
 # files). A mismatch fails the run and opens/updates ONE 'listing-verify' issue per package; a
 # clean read-back closes it. `verify_only: true` runs only the read-back - the caller template
 # schedules it daily so a hand edit in the Play Console (drift) is caught within a day.
+#
+# Post-review (APP-296): once Play's API holds the bundle, the report job also reads the PUBLIC Play
+# page (title, description hash, screenshot count). A 'listing-committed' issue per fingerprint dates
+# the review clock and closes with 'listing-verified' when the page matches; a page that still
+# differs 7 days later fails the run. Chrome (no listing read API): a person closing the
+# 'store-listing' checklist means "submitted"; 'chrome-verify' labels it 'listing-verified' when
+# the public page matches, or reopens it with the diff 7 days after close. An unreadable page is
+# VERIFIER_BROKEN and fails the run.
 name: listing
 
 on:
@@ -309,4 +317,44 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           KEY: ${{ matrix.key }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: node platform/scripts/listing.mjs verify-issue --bundle "listings/$KEY" --github-repo "$GITHUB_REPOSITORY" --run-url "$RUN_URL"
+        run: node platform/scripts/listing.mjs verify-issue --bundle "listings/$KEY" --github-repo "$GITHUB_REPOSITORY" --run-url "$RUN_URL" --public-check
+
+  # Chrome: the checklist issue closes only when the public page confirms it. No store access at
+  # all (public page + issues: write). Runs daily via the caller's verify_only schedule.
+  chrome-verify:
+    name: Chrome listing (public page)
+    needs: [prepare, chrome]
+    if: ${{ always() && !inputs.dry_run && needs.prepare.result == 'success' && needs.prepare.outputs.chrome_ids != '' && needs.prepare.outputs.chrome_ids != '[]' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    strategy:
+      fail-fast: false
+      matrix:
+        key: ${{ fromJSON(needs.prepare.outputs.chrome_ids) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ravitejakamalapuram/release-platform
+          ref: ${{ needs.prepare.outputs.platform_sha }}
+          path: platform
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: listings
+          path: listings
+
+      - uses: actions/setup-node@v7
+        with:
+          package-manager-cache: false
+          node-version: '22'
+
+      - name: Confirm the closed checklist against the public page
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEY: ${{ matrix.key }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node platform/scripts/listing.mjs chrome-verify --bundle "listings/$KEY" --github-repo "$GITHUB_REPOSITORY" --run-url "$RUN_URL"
