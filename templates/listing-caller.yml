@@ -1,8 +1,20 @@
 # Copy to .github/workflows/listing.yml in your app repo (needs `listing:` on a target in
-# release.yaml). Run it after merging listing changes.
+# release.yaml). A merge to main that changes the listing files syncs automatically (dry run
+# first); you can still run it by hand from the Actions tab.
 name: listing
 
 on:
+  push:
+    branches: [main]
+    # EDIT THIS for your repo. Only listing files should trigger a sync, so list exactly the
+    # paths your release.yaml `listing:` points at (and the images they reference):
+    #   Android: the fastlane metadata directory, minus changelogs (those ship with releases)
+    #   Chrome:  the store.config.json folder, plus the image folder it references
+    paths:
+      - 'android/fastlane/metadata/android/**'
+      - '!android/fastlane/metadata/android/*/changelogs/**'
+      - 'chrome-store/**'
+      - 'extension/store-assets/**'
   workflow_dispatch:
     inputs:
       dry_run:
@@ -17,12 +29,26 @@ on:
 permissions: {}
 
 jobs:
-  listing:
+  # Always a dry run first: a listing that fails validation stops here, before the sync job.
+  preview:
     permissions:
       contents: read
       issues: write     # Chrome: the Developer Dashboard checklist issue
       id-token: write   # Play: keyless Google auth (OIDC -> Workload Identity Federation)
     uses: ravitejakamalapuram/release-platform/.github/workflows/listing.yml@v2
     with:
-      dry_run: ${{ inputs.dry_run || false }}
+      dry_run: true
+      targets: ${{ inputs.targets || '' }}
+
+  sync:
+    needs: preview
+    # Merges always sync; a manual run syncs unless it asked for a dry run (the preview above).
+    if: github.event_name == 'push' || inputs.dry_run == false
+    permissions:
+      contents: read
+      issues: write
+      id-token: write
+    uses: ravitejakamalapuram/release-platform/.github/workflows/listing.yml@v2
+    with:
+      dry_run: false
       targets: ${{ inputs.targets || '' }}
