@@ -158,6 +158,32 @@ jobs:
           if [ -n "$FRACTION" ]; then args+=(--fraction "$FRACTION"); fi
           node platform/scripts/play.mjs "${args[@]}"
 
+      # APP-295: read the track back in a separate read-only edit (never committed). Status and
+      # fraction come from the INPUTS; the version codes (and, for halt, the fraction) are the
+      # release the writer chose. Exit 1 when Play does not hold that release as intended.
+      - name: Verify ${{ inputs.action }} on Play (read back the track)
+        id: verify
+        env:
+          GOOGLE_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          ACTION: ${{ inputs.action }}
+          PACKAGE: ${{ needs.config.outputs.package }}
+          TO: ${{ inputs.to_track }}
+          FRACTION: ${{ inputs.user_fraction }}
+          VERSION_CODES: ${{ steps.play.outputs.version_codes }}
+          CHOSEN_FRACTION: ${{ steps.play.outputs.user_fraction }}
+        run: |
+          case "$ACTION" in
+            promote|rollout)
+              if [ -z "$FRACTION" ] || [ "$(jq -n --arg f "$FRACTION" '$f | tonumber >= 1')" = "true" ]; then
+                status=completed; FRACTION=""
+              else status=inProgress; fi ;;
+            complete) status=completed; FRACTION="" ;;
+            halt) status=halted; FRACTION="$CHOSEN_FRACTION" ;;
+          esac
+          args=(verify-track --package "$PACKAGE" --track "$TO" --version-codes "$VERSION_CODES" --status "$status")
+          if [ -n "$FRACTION" ]; then args+=(--fraction "$FRACTION"); fi
+          node platform/scripts/play.mjs "${args[@]}"
+
       - name: Summary
         if: always()
         env:
@@ -165,11 +191,12 @@ jobs:
           PACKAGE: ${{ needs.config.outputs.package }}
           RESULT: ${{ steps.play.outputs.result }}
           OUTCOME: ${{ steps.play.outcome }}
+          VERIFY: ${{ steps.verify.outputs.result || steps.verify.outcome }}
         run: |
           {
             echo "## Google Play: $ACTION"
             echo ""
-            echo "| Package | Result |"
-            echo "| --- | --- |"
-            echo "| \`$PACKAGE\` | ${RESULT:-$OUTCOME} |"
+            echo "| Package | Result | Read back from Play |"
+            echo "| --- | --- | --- |"
+            echo "| \`$PACKAGE\` | ${RESULT:-$OUTCOME} | ${VERIFY:-not run} |"
           } >> "$GITHUB_STEP_SUMMARY"
