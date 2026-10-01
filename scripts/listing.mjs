@@ -523,7 +523,6 @@ export async function chromeVerify({ manifest, repo, runUrl = '', now = new Date
   const id = `${manifest.item_id} (${manifest.fingerprint})`;
   if (plan === 'no-checklist') return { result: `CHROME_LISTING_NO_CHECKLIST: no store-listing issue for ${id}; run the listing workflow to open one`, failed: false, mismatches: [] };
   if (plan === 'awaiting-submission') return { result: `CHROME_LISTING_AWAITING_SUBMISSION: #${issue.number} is still open`, failed: false, mismatches: [] };
-  if (plan === 'done') return { result: `CHROME_LISTING_VERIFIED: #${issue.number} already confirmed`, failed: false, mismatches: [] };
   const check = await checkChromePublic({ manifest, fetchImpl });
   const v = chromeVerdict({ issue, check, now });
   const n = String(issue.number);
@@ -534,6 +533,13 @@ export async function chromeVerify({ manifest, repo, runUrl = '', now = new Date
     const msg = `The public Chrome Web Store page matches this listing (description, screenshot count). Confirmed ${now.toISOString().slice(0, 10)}${runUrl ? ` by ${runUrl}` : ''}.`;
     gh(issue.state === 'OPEN' ? ['issue', 'close', n, '--repo', repo, '--comment', msg] : ['issue', 'comment', n, '--repo', repo, '--body', msg]);
     return { result: `CHROME_LISTING_VERIFIED: #${n}`, failed: false, mismatches: [] };
+  }
+  if (v.action === 'still-verified') return { result: `CHROME_LISTING_VERIFIED: #${n} still matches the public page`, failed: false, mismatches: [] };
+  if (v.action === 'drift') {
+    gh(['label', 'create', VERIFY_LABEL, '--repo', repo, '--color', 'b60205', '--description', 'The store does not match the repo listing (read back by the listing workflow)', '--force']);
+    gh(['issue', 'reopen', n, '--repo', repo, '--comment', [`The public Chrome Web Store page matched this listing before, but it differs now${runUrl ? ` (${runUrl})` : ''}:`, '', diff, '', 'Was the listing edited in the Developer Dashboard? Bring the store back to the repo listing (or change the repo), then close this issue again; the daily run confirms it.'].join('\n')]);
+    gh(['issue', 'edit', n, '--repo', repo, '--remove-label', VERIFIED_LABEL, '--add-label', VERIFY_LABEL]);
+    return { result: `CHROME_LISTING_MISMATCH: #${n} drifted after it was confirmed; reopened`, failed: true, mismatches: check.mismatches };
   }
   if (v.action === 'reopen') {
     gh(['label', 'create', VERIFY_LABEL, '--repo', repo, '--color', 'b60205', '--description', 'The store does not match the repo listing (read back by the listing workflow)', '--force']);

@@ -1,14 +1,19 @@
-// Post-review public-page verification (APP-296). The fixtures in tests/fixtures/public-pages are
-// trimmed copies of the real Play / Chrome Web Store markup (captured 2026-10-01) with test text.
+// Post-review public-page verification (APP-296). Most fixtures in tests/fixtures/public-pages are
+// trimmed copies of the real Play / Chrome Web Store markup (captured 2026-10-01) with test text;
+// the real-*.html.gz ones are untouched live captures of the same day, so a selector that only
+// works on the hand-built copies fails here.
 // MUTATION tests: an edited description, one screenshot fewer and unparseable markup must each
 // fail - a verifier that cannot fail is not a verifier.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { gunzipSync } from 'node:zlib';
 import {
   checkChromePublic,
   checkPlayPublic,
+  chromePageUrl,
   chromeVerdict,
+  divInner,
   normaliseText,
   parseChromePage,
   parsePlayPage,
@@ -19,6 +24,7 @@ import {
 import { chromeVerify, playPublicReport } from '../scripts/listing.mjs';
 
 const fixture = (name) => readFileSync(new URL(`./fixtures/public-pages/${name}.html`, import.meta.url), 'utf8');
+const realPage = (name) => gunzipSync(readFileSync(new URL(`./fixtures/public-pages/${name}.html.gz`, import.meta.url))).toString('utf8');
 const NOW = new Date('2026-10-20T03:17:00Z');
 const daysAgo = (d) => new Date(NOW.getTime() - d * 86400000).toISOString();
 
@@ -66,6 +72,46 @@ test('parseChromePage skips the summary paragraph and counts carousel clones onc
   const p = parseChromePage(fixture('cws-detail'), manifest().item_id);
   assert.equal(p.screenshots, 3);
   assert.equal(p.descriptionLength, normaliseText(manifest().text.description).length);
+});
+
+// ---- Real live pages (captured 2026-10-01). The expected hashes are textHash() of the repo
+// listings at that time - InvTrack@2f6509df android listing, json-workbench@d9a8885 chrome listing -
+// which the live pages matched exactly.
+test('REAL Play page (InvTrack): title, description hash, and 5 screenshots shown in 15 carousel slots', () => {
+  const p = parsePlayPage(realPage('real-play-invtrack-2026-10-01'), 'com.invtracker.inv_tracker');
+  assert.equal(p.title, 'InvTrack - Investment Tracker');
+  assert.equal(p.descriptionHash, '8d938bb9430285b22cbe6bd5ffcabba973f21400c87115873a438486cd658533');
+  assert.equal(p.screenshots, 5, 'the carousel repeats each image per form factor; distinct images are counted');
+});
+
+test('REAL Chrome Web Store page (json-workbench): description hash and 5 screenshots', () => {
+  const p = parseChromePage(realPage('real-cws-json-workbench-2026-10-01'), 'higmlhleblpmdogjccpmjlnilpmhohal');
+  assert.equal(p.descriptionHash, 'a37adcd1a5cdb5fd35236bbfdb7109b7d8b8f014e3958c6f26fc5d805e8e5401');
+  assert.equal(p.screenshots, 5);
+});
+
+test('a nested <div> inside the description does not cut the text short (Play and Chrome)', () => {
+  assert.equal(divInner('<div data-g-id="description" inert>a<div>b</div>c</div><div>x</div>', /<div[^>]*data-g-id="description"/), 'a<div>b</div>c');
+  const nested = fixture('play-details').replace('Track money in', '<div class="x">Track money in</div>');
+  assert.equal(parsePlayPage(nested, 'com.x').descriptionLength, normaliseText(bundle().locales[0].fullDescription).length);
+  const cws = fixture('cws-detail');
+  const nestedCws = cws.replace(/(<div jsname="ij8cu"[^>]*>)/, '$1<div class="wrap">').replace(/(<div jsname="ij8cu"[\s\S]*?)<\/div>/, '$1</div></div>');
+  assert.notEqual(nestedCws, cws);
+  assert.equal(parseChromePage(nestedCws, manifest().item_id).descriptionLength, normaliseText(manifest().text.description).length);
+});
+
+test('chromePageUrl encodes the item id like playPageUrl encodes the package', () => {
+  assert.equal(chromePageUrl('a/b?c', 'en'), 'https://chromewebstore.google.com/detail/a%2Fb%3Fc?hl=en');
+});
+
+test('a Google consent / region wall from the runner is VERIFIER_BROKEN with a clear message', async () => {
+  const redirected = await checkPlayPublic({ bundle: bundle(), fetchImpl: web('play-details', { url: 'https://consent.google.com/ml?continue=https://play.google.com/x' }).fetchImpl });
+  assert.equal(redirected.outcome, 'broken');
+  assert.match(redirected.mismatches[0], /^VERIFIER_BROKEN: GET .* was redirected to a Google consent page \(https:\/\/consent\.google\.com\/ml\): the runner's region/);
+  const wall = async (u) => ({ ok: true, status: 200, url: u, text: async () => '<html><form action="https://consent.google.com/save" method="POST"><button>Accept all</button></form></html>' });
+  const inline = await checkChromePublic({ manifest: manifest(), fetchImpl: wall });
+  assert.equal(inline.outcome, 'broken');
+  assert.match(inline.mismatches[0], /returned a Google consent page instead of the store page/);
 });
 
 test('normaliseText: <br>, tags, entities and whitespace runs give the same text as the repo', () => {
@@ -203,7 +249,7 @@ test('planChromeVerify: an open checklist is awaiting submission; a person closi
   assert.equal(planChromeVerify(checklist('OPEN')), 'awaiting-submission');
   assert.equal(planChromeVerify(checklist('CLOSED', { closedAt: daysAgo(1) })), 'check');
   assert.equal(planChromeVerify(checklist('OPEN', { labels: [{ name: 'listing-verify' }] })), 'check');
-  assert.equal(planChromeVerify(checklist('CLOSED', { labels: [{ name: 'listing-verified' }] })), 'done');
+  assert.equal(planChromeVerify(checklist('CLOSED', { labels: [{ name: 'listing-verified' }] })), 'recheck');
 });
 
 test('chromeVerify: closed + public page matches -> listing-verified label, issue stays closed', async () => {
@@ -258,4 +304,32 @@ test('chromeVerify: an open checklist (not yet submitted) fetches nothing and pa
   const r = await chromeVerify({ manifest: manifest(), repo: 'o/a', now: NOW, fetchImpl: w.fetchImpl, gh: fakeGh([checklist('OPEN')]).gh });
   assert.equal(r.failed, false);
   assert.equal(w.calls.length, 0);
+});
+
+// ---- A confirmed listing is re-checked every day: later drift is caught, not trusted forever.
+const confirmed = () => checklist('CLOSED', { closedAt: daysAgo(30), labels: [{ name: 'store-listing' }, { name: 'listing-verified' }] });
+
+test('chromeVerify: a confirmed checklist whose page still matches writes nothing and passes', async () => {
+  const w = web('cws-detail');
+  const g = fakeGh([confirmed()]);
+  const r = await chromeVerify({ manifest: manifest(), repo: 'o/a', now: NOW, fetchImpl: w.fetchImpl, gh: g.gh });
+  assert.deepEqual([r.result, r.failed], ['CHROME_LISTING_VERIFIED: #7 still matches the public page', false]);
+  assert.equal(w.calls.length, 1, 'the page is fetched again');
+  assert.equal(g.calls.length, 1, 'only the issue list');
+});
+
+test('chromeVerify MUTATION: a confirmed checklist whose page drifted is reopened at once, swaps labels, fails', async () => {
+  const g = fakeGh([confirmed()]);
+  const r = await chromeVerify({ manifest: manifest(), repo: 'o/a', now: NOW, fetchImpl: web('cws-one-screenshot-fewer').fetchImpl, gh: g.gh });
+  assert.equal(r.failed, true);
+  assert.match(r.result, /^CHROME_LISTING_MISMATCH: #7 drifted after it was confirmed/);
+  const reopen = g.did('reopen')[0];
+  assert.match(reopen[reopen.indexOf('--comment') + 1], /matched this listing before, but it differs now:\n\n- public screenshot count differs \(repo 3, page 2\)/);
+  assert.deepEqual(g.did('edit')[0].slice(3), ['--repo', 'o/a', '--remove-label', 'listing-verified', '--add-label', 'listing-verify']);
+});
+
+test('chromeVerify MUTATION: a confirmed checklist whose page became unparseable fails the run', async () => {
+  const r = await chromeVerify({ manifest: manifest(), repo: 'o/a', now: NOW, fetchImpl: web('cws-unparseable').fetchImpl, gh: fakeGh([confirmed()]).gh });
+  assert.equal(r.failed, true);
+  assert.match(r.mismatches[0], /^VERIFIER_BROKEN/);
 });

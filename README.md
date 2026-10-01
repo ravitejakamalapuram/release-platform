@@ -435,9 +435,13 @@ workflow daily with `verify_only: true`, which changes nothing in the store:
   "submitted", not "done". The daily run reads the public detail page and compares the hash of
   the description and the screenshot count. When they match, it adds `listing-verified`. If the
   page still differs 7 days after the close, it reopens the issue with the diff and the
-  `listing-verify` label, and the run fails.
+  `listing-verify` label, and the run fails. A `listing-verified` issue is still checked every
+  day: if the page changes later, the issue is reopened at once, with no 7-day grace.
+- Screenshots are counted as distinct images. Play's carousel shows each image once per form
+  factor (the InvTrack page has 15 slots for 5 images).
 - If a public page can't be read or parsed, the result is `VERIFIER_BROKEN` and the run fails.
-  That never counts as a pass.
+  So is a Google consent or region page served to the runner instead of the store page. That
+  never counts as a pass.
 
 **Demo-video checkpoint:** a Chrome listing without `promoVideo` gets one "Demo video needed" issue
 (labels `demo-video`, `agent-ready`). The agent company records the demo; the board uploads it to

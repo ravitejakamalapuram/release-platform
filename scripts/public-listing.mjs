@@ -37,6 +37,24 @@ export function normaliseText(s) {
 export const textHash = (s) => createHash('sha256').update(normaliseText(s), 'utf8').digest('hex');
 const short = (h) => h.slice(0, 12);
 
+/**
+ * Inner HTML of the first <div> whose opening tag matches `open`, balancing nested divs (a
+ * non-greedy match to the first </div> would cut the text at a nested div). undefined if absent.
+ */
+export function divInner(html, open) {
+  const start = html.search(open);
+  if (start < 0) return undefined;
+  const from = html.indexOf('>', start) + 1;
+  const tags = /<div\b[^>]*>|<\/div\s*>/gi;
+  tags.lastIndex = from;
+  let depth = 1;
+  for (let m = tags.exec(html); m; m = tags.exec(html)) {
+    depth += m[0][1] === '/' ? -1 : 1;
+    if (depth === 0) return html.slice(from, m.index);
+  }
+  return undefined;
+}
+
 function need(value, what, page) {
   if (value === undefined || value === null || value === '') throw new VerifierBroken(`VERIFIER_BROKEN: ${page}: ${what} not found in the page markup`);
   return value;
@@ -48,10 +66,12 @@ export function parsePlayPage(html, pkg) {
   const canonical = need(html.match(/<link rel="canonical" href="([^"]*)"/)?.[1], 'canonical link', page);
   if (!decode(canonical).includes(`id=${pkg}`)) throw new VerifierBroken(`VERIFIER_BROKEN: ${page}: the page is for ${decode(canonical)}`);
   const title = need(html.match(/<h1[^>]*>\s*<span[^>]*itemprop="name"[^>]*>([\s\S]*?)<\/span>/)?.[1], 'title (h1 itemprop=name)', page);
-  const description = need(html.match(/<div[^>]*data-g-id="description"[^>]*>([\s\S]*?)<\/div>/)?.[1], 'description (data-g-id=description)', page);
-  const shots = new Set([...html.matchAll(/<img[^>]*alt="Screenshot image"[^>]*data-screenshot-index="(\d+)"/g)].map((m) => m[1]));
+  const description = need(divInner(html, /<div[^>]*data-g-id="description"/), 'description (data-g-id=description)', page);
+  // The carousel repeats each screenshot once per form factor (the live InvTrack page has 15 slots
+  // for 5 images), so count distinct images: the src without its =wNNN-hNNN size suffix.
+  const shots = new Set([...html.matchAll(/<img[^>]*alt="Screenshot image"[^>]*>/g)].map((m) => m[0].match(/\ssrc="([^"=]+)/)?.[1]).filter(Boolean));
   // Play refuses to publish a listing with fewer than 2 screenshots: 0 means the markup changed.
-  need(shots.size || '', 'screenshots (img alt="Screenshot image" data-screenshot-index)', page);
+  need(shots.size || '', 'screenshots (img alt="Screenshot image" src)', page);
   return { title: normaliseText(title), descriptionHash: textHash(description), descriptionLength: normaliseText(description).length, screenshots: shots.size };
 }
 
@@ -60,7 +80,7 @@ export function parseChromePage(html, itemId) {
   const page = `Chrome Web Store page for ${itemId}`;
   const canonical = need(html.match(/<link rel="canonical" href="([^"]*)"/)?.[1], 'canonical link', page);
   if (!canonical.endsWith(`/${itemId}`)) throw new VerifierBroken(`VERIFIER_BROKEN: ${page}: the page is for ${canonical}`);
-  const overview = need(html.match(/<div jsname="ij8cu"[^>]*>([\s\S]*?)<\/div>/)?.[1], 'overview (div jsname=ij8cu)', page);
+  const overview = need(divInner(html, /<div jsname="ij8cu"/), 'overview (div jsname=ij8cu)', page);
   const paras = [...overview.matchAll(/<p[^>]*>([\s\S]*?)<\/p>/g)].map((m) => m[1]);
   if (paras.length < 2) throw new VerifierBroken(`VERIFIER_BROKEN: ${page}: overview has ${paras.length} paragraph(s), expected summary + description`);
   const description = paras.slice(1).join('\n');
@@ -92,7 +112,7 @@ export function diffChromePage(manifest, page) {
 }
 
 export const playPageUrl = (pkg, lang) => `https://play.google.com/store/apps/details?id=${encodeURIComponent(pkg)}&hl=${encodeURIComponent(lang)}`;
-export const chromePageUrl = (itemId, lang) => `https://chromewebstore.google.com/detail/${itemId}${lang ? `?hl=${encodeURIComponent(lang)}` : ''}`;
+export const chromePageUrl = (itemId, lang) => `https://chromewebstore.google.com/detail/${encodeURIComponent(itemId)}${lang ? `?hl=${encodeURIComponent(lang)}` : ''}`;
 
 /**
  * GET a public page. null = not public (a real difference): HTTP 404, or the Chrome Web Store's
@@ -106,9 +126,12 @@ export async function fetchPage(url, fetchImpl = fetch) {
   } catch (err) {
     throw new VerifierBroken(`VERIFIER_BROKEN: GET ${url} failed: ${err.message}`);
   }
+  if (/^https?:\/\/consent\.(google|youtube)\.[a-z.]+\//.test(res.url ?? '')) throw new VerifierBroken(`VERIFIER_BROKEN: GET ${url} was redirected to a Google consent page (${res.url.split('?')[0]}): the runner's region gets a cookie wall instead of the store page, so nothing was checked`);
   if (res.status === 404 || /\/detail\/empty-title\//.test(res.url ?? '')) return null;
   if (!res.ok) throw new VerifierBroken(`VERIFIER_BROKEN: GET ${url} returned HTTP ${res.status}`);
-  return res.text();
+  const html = await res.text();
+  if (/<form[^>]+action="https:\/\/consent\.(google|youtube)\./.test(html)) throw new VerifierBroken(`VERIFIER_BROKEN: GET ${url} returned a Google consent page instead of the store page (the runner's region gets a cookie wall), so nothing was checked`);
+  return html;
 }
 
 /**
@@ -183,24 +206,29 @@ export function publicVerdict({ check, since, now }) {
 /**
  * `issue` is the checklist issue carrying this manifest's fingerprint ({ number, state, closedAt,
  * labels }) or undefined. Returns what the run must do before any page is fetched:
- * 'no-checklist' | 'awaiting-submission' | 'done' | 'check'.
+ * 'no-checklist' | 'awaiting-submission' | 'recheck' (confirmed before: re-checked daily so later
+ * drift is caught) | 'check'.
  */
 export function planChromeVerify(issue) {
   if (!issue) return 'no-checklist';
   const labels = (issue.labels ?? []).map((l) => l.name ?? l);
-  if (labels.includes(VERIFIED_LABEL)) return 'done';
+  if (labels.includes(VERIFIED_LABEL)) return 'recheck';
   if (issue.state === 'OPEN' && !labels.includes('listing-verify')) return 'awaiting-submission';
   return 'check';
 }
 
 /**
  * Given the check result: 'verify' (label listing-verified; close if the bot had reopened it),
- * 'pending', 'reopen' (overdue: reopen with the diff + listing-verify label), 'still-open' (already
- * reopened, still differs), or 'broken'. `failed` = the run must exit non-zero.
+ * 'still-verified' (a recheck that still matches: nothing to write), 'drift' (it matched before and
+ * no longer does: reopen at once, no review grace), 'pending', 'reopen' (overdue: reopen with the
+ * diff + listing-verify label), 'still-open' (already reopened, still differs), or 'broken'.
+ * `failed` = the run must exit non-zero.
  */
 export function chromeVerdict({ issue, check, now }) {
+  const confirmed = (issue.labels ?? []).some((l) => (l.name ?? l) === VERIFIED_LABEL);
   if (check.outcome === 'broken') return { action: 'broken', failed: true };
-  if (check.outcome === 'verified') return { action: 'verify', failed: false };
+  if (check.outcome === 'verified') return { action: confirmed ? 'still-verified' : 'verify', failed: false };
+  if (confirmed) return { action: 'drift', failed: true };
   if (issue.state === 'OPEN') return { action: 'still-open', failed: true };
   if (!overdue(issue.closedAt, now)) return { action: 'pending', failed: false };
   return { action: 'reopen', failed: true };
