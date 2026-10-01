@@ -411,7 +411,23 @@ targets:
 Every referenced file must exist inside the repo, as PNG or JPEG.
 
 **3. Sync** with the `listing` workflow (copy
-[`templates/listing-caller.yml`](templates/listing-caller.yml)), run manually after merging:
+[`templates/listing-caller.yml`](templates/listing-caller.yml)). A merge to `main` that touches
+the listing files syncs automatically: a `preview` job (dry run) runs first, then `sync` runs
+only if it passes. **Edit the `paths:` filter** in the copied file so only your listing files
+(and the images they reference) trigger it, not every merge; changelogs are excluded for
+Android. You can still run it by hand with `workflow_dispatch` (Actions tab → listing → Run
+workflow); a manual run with `dry_run` ticked stops after the preview.
+
+- **Concurrency caveat:** the listing workflow shares the release lock (below), and so does
+  every release, including `auto-release`. GitHub keeps
+  [at most one running and one *pending* run per concurrency group](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency);
+  when another run joins the group, the waiting run is cancelled. A merge that touches the
+  listing files and code starts both a listing run and an auto-release, so either one can be
+  replaced while it waits:
+  - a cancelled **listing** run: run `listing` by hand (`workflow_dispatch`) after the release
+    finishes;
+  - a cancelled **release**: the hourly `auto-release` check releases the unreleased commits at
+    the next open window, or run `auto-release` (or `release`) by hand.
 
 - **Google Play:** one Play edit per run. Text is updated when it differs. For each image type
   in the repo, images are replaced only when the ordered SHA-256 list differs from what Play
