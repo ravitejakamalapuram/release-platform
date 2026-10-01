@@ -116,14 +116,17 @@ async function run(flow, { onRead, ...fakeOpts } = {}) {
   await flow.write({ pkg: 'com.x', token: 't', fetchImpl: play.fetchImpl });
   play.onRead = onRead;
   const before = play.calls.length;
-  const r = await verifyTrack({ pkg: 'com.x', token: 't', fetchImpl: play.fetchImpl, ...flow.intended });
+  const r = await verifyTrack({ pkg: 'com.x', token: 't', fetchImpl: play.fetchImpl, wait: noWait, ...flow.intended });
   return { ...r, verifyCalls: play.calls.slice(before) };
 }
+
+const noWait = async () => {};
 
 for (const [name, flow] of Object.entries(FLOWS)) {
   test(`verifyTrack after ${name}: Play holds the intended release -> VERIFIED, read-back never commits`, async () => {
     const r = await run(flow);
     assert.deepEqual({ ok: r.ok, mismatches: r.mismatches }, { ok: true, mismatches: [] });
+    assert.equal(r.reads, 1, 'a match needs no second read');
     assert.equal(r.verifyCalls.filter((c) => c.includes(':commit')).length, 0, 'the read-back must not commit');
     assert.ok(r.verifyCalls.some((c) => c.startsWith('DELETE ') && /\/edits\/e\d+$/.test(c)), 'the read-only edit is deleted');
     assert.ok(!r.verifyCalls.some((c) => c.startsWith('PUT ')), 'the read-back must not write');
@@ -134,6 +137,16 @@ for (const [name, flow] of Object.entries(FLOWS)) {
     const r = await run(flow, { dropWrites: true });
     assert.equal(r.ok, false);
     assert.ok(r.mismatches.length > 0);
+    assert.equal(r.reads, 3, 'a persistent mismatch is read 3 times, then fails');
+    assert.equal(r.verifyCalls.filter((c) => c.startsWith('POST ') && c.endsWith('/edits')).length, 3);
+    assert.equal(r.verifyCalls.filter((c) => c.startsWith('DELETE ')).length, 3, 'every read-only edit is deleted');
+    assert.equal(r.verifyCalls.filter((c) => c.includes(':commit') || c.startsWith('PUT ')).length, 0, 'retries never write');
+  });
+
+  test(`${name}: Play is stale on the first read only -> VERIFIED on the second read`, async () => {
+    let reads = 0;
+    const r = await run(flow, { onRead: (ts) => { if (reads++ === 0) ts.forEach((t) => t.releases?.forEach((rel) => rel.versionCodes.includes('1002003') && (rel.versionCodes = ['1002002']))); } });
+    assert.deepEqual({ ok: r.ok, reads: r.reads }, { ok: true, reads: 2 });
   });
 
   test(`MUTATION ${name}: Play reports a different status -> MISMATCH`, async () => {
@@ -152,7 +165,7 @@ for (const [name, flow] of Object.entries(FLOWS)) {
 
 test('MUTATION: the release landed on the wrong track -> MISMATCH', async () => {
   const play = fakePlay([{ track: 'internal', releases: [NEW] }, { track: 'production', releases: [OLD] }]);
-  const r = await verifyTrack({ pkg: 'com.x', token: 't', fetchImpl: play.fetchImpl, track: 'production', versionCodes: ['1002003'], status: 'completed' });
+  const r = await verifyTrack({ pkg: 'com.x', token: 't', fetchImpl: play.fetchImpl, wait: noWait, track: 'production', versionCodes: ['1002003'], status: 'completed' });
   assert.equal(r.ok, false);
   assert.match(r.mismatches[0], /production: no release with versionCodes \[1002003\] \(Play has production: 1\.2\.2 completed\)/);
 });
@@ -175,4 +188,16 @@ test('diffTrack: a staged release with no fraction on Play, or a completed one w
 test('verifyTrack refuses an intended state it cannot check (staged with no fraction)', async () => {
   await assert.rejects(verifyTrack({ pkg: 'com.x', token: 't', fetchImpl: fakePlay([]).fetchImpl, track: 'production', versionCodes: ['1'], status: 'inProgress' }), /needs a user fraction/);
   await assert.rejects(verifyTrack({ pkg: 'com.x', token: 't', fetchImpl: fakePlay([]).fetchImpl, track: 'production', versionCodes: [], status: 'completed' }), /needs track, versionCodes and status/);
+});
+
+test('verifyTrack waits about 10 s between reads, and only after a mismatch', async () => {
+  const waits = [];
+  const play = fakePlay([{ track: 'production', releases: [OLD] }]);
+  const r = await verifyTrack({ pkg: 'com.x', token: 't', fetchImpl: play.fetchImpl, wait: async (ms) => waits.push(ms), track: 'production', versionCodes: ['1002003'], status: 'completed' });
+  assert.equal(r.ok, false);
+  assert.deepEqual(waits, [10_000, 10_000]);
+  const ok = fakePlay([{ track: 'production', releases: [NEW] }]);
+  const waits2 = [];
+  await verifyTrack({ pkg: 'com.x', token: 't', fetchImpl: ok.fetchImpl, wait: async (ms) => waits2.push(ms), track: 'production', versionCodes: ['1002003'], status: 'completed' });
+  assert.deepEqual(waits2, [], 'no wait when the first read matches');
 });

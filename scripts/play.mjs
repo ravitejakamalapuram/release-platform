@@ -15,6 +15,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { ApiError, request } from './lib/http.mjs';
@@ -366,14 +367,25 @@ export function diffTrack(intended, tracks) {
  * compare it with the intended release. Run it as its own step after upload / promote / rollout:
  * a 200 on the PUT and the commit is not proof that Play kept the release. Read-only by construction.
  */
-export async function verifyTrack({ pkg, token, fetchImpl, track, versionCodes, status, userFraction }) {
+export async function verifyTrack({ pkg, token, fetchImpl, track, versionCodes, status, userFraction, attempts = 3, delayMs = 10_000, wait = sleep }) {
   if (!track || !versionCodes?.length || !status) throw new Error('verifyTrack needs track, versionCodes and status');
   if ((status === 'inProgress' || status === 'halted') && !(userFraction > 0 && userFraction < 1)) {
     throw new Error(`An intended ${status} release needs a user fraction between 0 and 1 (exclusive), got ${userFraction}`);
   }
-  const { result } = await withEdit({ pkg, token, fetchImpl, readOnly: true }, (id) => request({ method: 'GET', url: urls.tracks(pkg, id), token, fetchImpl }));
-  const mismatches = diffTrack({ track, versionCodes, status, userFraction }, result.tracks ?? []);
-  return { ok: mismatches.length === 0, mismatches };
+  // Play can serve a stale track for a few seconds after a commit. Re-read only on a mismatch;
+  // a mismatch on every read still fails (a failed check here blocks the tag, and a re-run cannot
+  // reuse the versionCode). Errors are not retried.
+  let mismatches = [];
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    if (attempt > 1) {
+      log(`  read-back ${attempt - 1}/${attempts} did not match; reading again in ${delayMs / 1000}s`);
+      await wait(delayMs);
+    }
+    const { result } = await withEdit({ pkg, token, fetchImpl, readOnly: true }, (id) => request({ method: 'GET', url: urls.tracks(pkg, id), token, fetchImpl }));
+    mismatches = diffTrack({ track, versionCodes, status, userFraction }, result.tracks ?? []);
+    if (!mismatches.length) return { ok: true, mismatches, reads: attempt };
+  }
+  return { ok: false, mismatches, reads: attempts };
 }
 
 export function describeTracks(tracks) {

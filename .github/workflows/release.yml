@@ -579,7 +579,7 @@ jobs:
           if [ "$outcome" = "success" ]; then
             jq -n --arg k "$KEY" --arg r "$RESULT" '{key:$k, ok:true, result:$r}'
           else
-            jq -n --arg k "$KEY" --arg o "${outcome:-not run}" '{key:$k, ok:false, result:("FAILED (" + $o + ") - see job log")}'
+            jq -n --arg k "$KEY" --arg o "${outcome:-not run}" --arg r "$RESULT" '{key:$k, ok:false, result:("FAILED (" + $o + ")" + (if $r == "" then "" else ": " + $r end) + " - see job log")}'
           fi > "results/$KEY.json"
 
       - uses: actions/upload-artifact@v7
@@ -696,7 +696,8 @@ jobs:
           PREFLIGHT: ${{ steps.preflight.outcome }}
           PUBLISH: ${{ steps.publish.outcome }}
           VERIFY: ${{ steps.verify.outcome }}
-          RESULT: ${{ steps.verify.outputs.result || steps.publish.outputs.result || steps.preflight.outputs.result }}
+          RESULT: ${{ steps.publish.outputs.result || steps.preflight.outputs.result }}
+          VERIFY_RESULT: ${{ steps.verify.outputs.result }}
         run: |
           mkdir -p results
           if [ "$DRY_RUN" = "true" ]; then outcome="$PREFLIGHT"; else outcome="$PUBLISH"; fi
@@ -704,6 +705,8 @@ jobs:
           if [ "$DRY_RUN" != "true" ] && [ "$outcome" = "success" ] && [ "$VERIFY" != "success" ]; then
             outcome="verify ${VERIFY:-not run}"
           fi
+          # Keep both: the writer's result (e.g. COMMITTED_NOT_SENT_FOR_REVIEW = send for review by hand) and the read-back.
+          if [ -n "$VERIFY_RESULT" ]; then RESULT="${RESULT:+$RESULT; }$VERIFY_RESULT"; fi
           if [ "$DRY_RUN" = "true" ] && [ "$STORE_PREFLIGHT" != "true" ] && [ "$outcome" = "skipped" ]; then
             RESULT="dry run (store preflight skipped)"; outcome=success
           elif [ "$DRY_RUN" = "true" ] && [ "$outcome" = "success" ]; then
@@ -712,7 +715,7 @@ jobs:
           if [ "$outcome" = "success" ]; then
             jq -n --arg k "$KEY" --arg r "$RESULT" '{key:$k, ok:true, result:$r}'
           else
-            jq -n --arg k "$KEY" --arg o "${outcome:-not run}" '{key:$k, ok:false, result:("FAILED (" + $o + ") - see job log")}'
+            jq -n --arg k "$KEY" --arg o "${outcome:-not run}" --arg r "$RESULT" '{key:$k, ok:false, result:("FAILED (" + $o + ")" + (if $r == "" then "" else ": " + $r end) + " - see job log")}'
           fi > "results/$KEY.json"
 
       - uses: actions/upload-artifact@v7
