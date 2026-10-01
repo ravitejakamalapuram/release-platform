@@ -1,8 +1,13 @@
 # Copy to .github/workflows/listing.yml in your app repo (needs `listing:` on a target in
 # release.yaml). Run it after merging listing changes.
+# The daily schedule is a read-only drift check (APP-290): it compares the live Play listing with
+# the repo, changes nothing, and opens ONE 'listing-verify' issue if they differ (e.g. someone
+# edited the Play Console by hand). It closes that issue itself once they match again.
 name: listing
 
 on:
+  schedule:
+    - cron: '17 3 * * *'
   workflow_dispatch:
     inputs:
       dry_run:
@@ -20,9 +25,10 @@ jobs:
   listing:
     permissions:
       contents: read
-      issues: write     # Chrome: the Developer Dashboard checklist issue
+      issues: write     # Chrome checklist issue; Play 'listing-verify' issue on a mismatch
       id-token: write   # Play: keyless Google auth (OIDC -> Workload Identity Federation)
     uses: ravitejakamalapuram/release-platform/.github/workflows/listing.yml@v2
     with:
       dry_run: ${{ inputs.dry_run || false }}
+      verify_only: ${{ github.event_name == 'schedule' }}
       targets: ${{ inputs.targets || '' }}

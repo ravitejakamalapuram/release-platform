@@ -7,6 +7,12 @@
 # Publisher API (only what differs is changed; an unchanged listing commits nothing).
 # Chrome Web Store: its API cannot change listings, so this opens one GitHub issue per listing
 # change with the files and a step-by-step checklist for the Developer Dashboard.
+#
+# Verification (APP-290): after the Play sync, a separate step opens a fresh read-only edit and
+# reads the listing back (text equality; ordered image sha256 from edits.images.list vs the repo
+# files). A mismatch fails the run and opens/updates ONE 'listing-verify' issue per package; a
+# clean read-back closes it. `verify_only: true` runs only the read-back - the caller template
+# schedules it daily so a hand edit in the Play Console (drift) is caught within a day.
 name: listing
 
 on:
@@ -14,6 +20,10 @@ on:
     inputs:
       dry_run:
         description: 'Validate and report what would change, without writing to Play or opening issues'
+        type: boolean
+        default: false
+      verify_only:
+        description: 'Read-only drift check: compare the live Play listing with the repo, change nothing (scheduled daily by the caller template)'
         type: boolean
         default: false
       targets:
@@ -133,7 +143,7 @@ jobs:
   chrome:
     name: Chrome listing
     needs: prepare
-    if: needs.prepare.outputs.chrome_ids != '' && needs.prepare.outputs.chrome_ids != '[]'
+    if: needs.prepare.outputs.chrome_ids != '' && needs.prepare.outputs.chrome_ids != '[]' && !inputs.verify_only
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -226,6 +236,7 @@ jobs:
           create_credentials_file: false
 
       - name: Sync the Play listing
+        if: ${{ !inputs.verify_only }}
         env:
           GOOGLE_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
           PACKAGE: ${{ steps.target.outputs.package }}
@@ -235,3 +246,67 @@ jobs:
           args=(listing --package "$PACKAGE" --bundle "listings/$KEY")
           if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
           node platform/scripts/play.mjs "${args[@]}"
+
+      # The verifier is not the sync: its own read-only edit (never committed), its own diff.
+      # Runs even when the sync said UNCHANGED - "unchanged" is a claim too. Exit 1 on mismatch.
+      - name: Verify the Play listing (read back from Play)
+        if: ${{ !inputs.dry_run }}
+        env:
+          GOOGLE_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          PACKAGE: ${{ steps.target.outputs.package }}
+          KEY: ${{ matrix.key }}
+        run: node platform/scripts/play.mjs verify-listing --package "$PACKAGE" --bundle "listings/$KEY"
+
+      - name: Keep the verifier result for the report job
+        if: ${{ always() && !inputs.dry_run }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: listing-verify-${{ matrix.key }}
+          path: listings/${{ matrix.key }}/
+          if-no-files-found: ignore
+
+  # Opens/updates/closes the 'listing-verify' issue. Separate job: issues: write, NO id-token.
+  # A missing verify.json (the android job died before verifying) is reported as 'broken'.
+  verify-report:
+    name: Listing verification report
+    needs: [prepare, android]
+    if: ${{ always() && !inputs.dry_run && needs.prepare.outputs.android_ids != '' && needs.prepare.outputs.android_ids != '[]' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    strategy:
+      fail-fast: false
+      matrix:
+        key: ${{ fromJSON(needs.prepare.outputs.android_ids) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ravitejakamalapuram/release-platform
+          ref: ${{ needs.prepare.outputs.platform_sha }}
+          path: platform
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: listings
+          path: listings
+
+      - uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: listing-verify-${{ matrix.key }}
+          path: listings/${{ matrix.key }}
+
+      - uses: actions/setup-node@v7
+        with:
+          package-manager-cache: false
+          node-version: '22'
+
+      - name: Open, update or close the listing-verify issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEY: ${{ matrix.key }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node platform/scripts/listing.mjs verify-issue --bundle "listings/$KEY" --github-repo "$GITHUB_REPOSITORY" --run-url "$RUN_URL"

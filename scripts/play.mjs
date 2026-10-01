@@ -10,7 +10,9 @@
 //   GOOGLE_ACCESS_TOKEN=... node scripts/play.mjs tracks   --package com.x
 //   GOOGLE_ACCESS_TOKEN=... node scripts/play.mjs preflight --package com.x --version-code 1002003   (read-only)
 //   GOOGLE_ACCESS_TOKEN=... node scripts/play.mjs listing  --package com.x --bundle listings/android-0 [--dry-run]
-import { readFileSync } from 'node:fs';
+//   GOOGLE_ACCESS_TOKEN=... node scripts/play.mjs verify-listing --package com.x --bundle listings/android-0   (read-only; exit 1 on mismatch)
+import { createHash } from 'node:crypto';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
@@ -261,6 +263,70 @@ export async function syncListing({ pkg, token, fetchImpl, bundle, readFile, dry
   return { changes, commit };
 }
 
+/**
+ * The verifier's own comparison of a bundle against what Play holds (APP-290). Deliberately does
+ * not reuse syncListing's checks: a sync must not be verified by the code that did the sync.
+ * `live` is { [language]: { listing: object|null, images: { [type]: [{ sha256 }] } } }.
+ * Fields and image types the bundle does not mention are not compared (sync leaves them alone).
+ * Returns one human-readable line per difference; [] means the store matches the repo.
+ */
+export function diffListing(bundle, live) {
+  const out = [];
+  for (const loc of bundle.locales ?? []) {
+    const lang = loc.language;
+    const got = live[lang] ?? { listing: null, images: {} };
+    if (!got.listing) out.push(`${lang}: listing missing on Play`);
+    else {
+      for (const k of LISTING_TEXT) {
+        if (k === 'video' && !loc.video) continue;
+        const want = loc[k] ?? '';
+        const have = got.listing[k] ?? '';
+        if (want !== have) out.push(`${lang}: ${k} differs (repo ${want.length} chars sha256 ${shortHash(want)}, Play ${have.length} chars sha256 ${shortHash(have)})`);
+      }
+    }
+    for (const [type, images] of Object.entries(loc.images ?? {})) {
+      const want = images.map((i) => i.sha256);
+      const have = (got.images?.[type] ?? []).map((i) => i.sha256);
+      if (want.length !== have.length) out.push(`${lang}: ${type} count differs (repo ${want.length}, Play ${have.length})`);
+      else {
+        const bad = want.flatMap((h, i) => (h === have[i] ? [] : [i + 1]));
+        if (bad.length) {
+          const reordered = [...want].sort().join() === [...have].sort().join();
+          out.push(`${lang}: ${type} ${reordered ? 'order' : 'image'} differs at position ${bad.join(', ')}`);
+        }
+      }
+    }
+  }
+  return out;
+}
+
+const shortHash = (s) => createHash('sha256').update(s, 'utf8').digest('hex').slice(0, 12);
+
+/**
+ * Read the listing back from Play in a fresh edit that is never committed (always deleted) and
+ * compare it with the bundle. Run it after syncListing (immediate read-back) and on a schedule
+ * (drift: someone edited the Play Console by hand). Read-only by construction.
+ */
+export async function verifyListing({ pkg, token, fetchImpl, bundle }) {
+  const { result: live } = await withEdit({ pkg, token, fetchImpl, readOnly: true }, async (id) => {
+    const seen = {};
+    for (const loc of bundle.locales ?? []) {
+      const listing = await request({ url: urls.listing(pkg, id, loc.language), token, fetchImpl }).catch((err) => {
+        if (err instanceof ApiError && err.status === 404) return null;
+        throw err;
+      });
+      const images = {};
+      for (const type of Object.keys(loc.images ?? {})) {
+        images[type] = (await request({ url: urls.images(pkg, id, loc.language, type), token, fetchImpl })).images ?? [];
+      }
+      seen[loc.language] = { listing, images };
+    }
+    return seen;
+  });
+  const mismatches = diffListing(bundle, live);
+  return { ok: mismatches.length === 0, mismatches };
+}
+
 /** Read-only: list all tracks (edit is always deleted, never committed). */
 export async function listTracks({ pkg, token, fetchImpl }) {
   const { result } = await withEdit({ pkg, token, fetchImpl, readOnly: true }, (id) => request({ method: 'GET', url: urls.tracks(pkg, id), token, fetchImpl }));
@@ -352,13 +418,28 @@ async function cli() {
       else out = `LISTING_${reportCommit(commit)}: ${pkg} ${changes.length} change(s)`;
       break;
     }
+    case 'verify-listing': {
+      if (!values.bundle) throw new Error('--bundle (a directory made by scripts/listing.mjs bundle) is required');
+      const bundle = JSON.parse(readFileSync(join(values.bundle, 'listing.json'), 'utf8'));
+      if (bundle.package !== pkg) throw new Error(`Bundle is for ${bundle.package}, not ${pkg}`);
+      const { ok, mismatches } = await verifyListing({ pkg, token, bundle });
+      // Read by `listing.mjs verify-issue` (a separate job with issues: write and no id-token).
+      writeFileSync(join(values.bundle, 'verify.json'), `${JSON.stringify({ outcome: ok ? 'verified' : 'mismatch', package: pkg, fingerprint: bundle.fingerprint, mismatches }, null, 2)}\n`);
+      if (!ok) {
+        for (const m of mismatches) log(`  ${m}`);
+        setOutput('result', `LISTING_MISMATCH: ${pkg} ${mismatches.length} difference(s)`);
+        throw new StoreError(`LISTING_MISMATCH: ${pkg} - Play does not match the repo listing (fingerprint ${bundle.fingerprint}): ${mismatches.length} difference(s), listed above`);
+      }
+      out = `LISTING_VERIFIED: ${pkg} matches the repo (fingerprint ${bundle.fingerprint})`;
+      break;
+    }
     case 'tracks': {
       const lines = describeTracks(await listTracks({ pkg, token }));
       out = lines.length ? lines.join('\n') : '(no releases on any track)';
       break;
     }
     default:
-      throw new Error(`Unknown command "${command}" (expected upload|preflight|promote|rollout|halt|complete|tracks|listing)`);
+      throw new Error(`Unknown command "${command}" (expected upload|preflight|promote|rollout|halt|complete|tracks|listing|verify-listing)`);
   }
   log(out);
   setOutput('result', out.split('\n')[0]);

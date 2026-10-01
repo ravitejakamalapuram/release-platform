@@ -4,6 +4,7 @@
 //   node scripts/listing.mjs check  --config release.json --repo .                 (PR checks)
 //   node scripts/listing.mjs bundle --config release.json --repo . --out listings  (listing.yml)
 //   node scripts/listing.mjs chrome-issue --bundle listings/chrome-0 --github-repo owner/app --run-url <url> [--dry-run]
+//   node scripts/listing.mjs verify-issue --bundle listings/android-0 --github-repo owner/app --run-url <url>  (after play.mjs verify-listing)
 //
 // Chrome: the target's `listing` points at chrome-store/store.config.json. The Chrome Web Store
 // API cannot change listings, so the bundle is prepared for a person to upload.
@@ -409,6 +410,57 @@ export function syncChromeIssue({ manifest, repo, runUrl = '', dryRun = false, g
   return { ...plan, url, result: `LISTING_ISSUE_OPENED: ${url}` };
 }
 
+export const VERIFY_LABEL = 'listing-verify';
+
+/**
+ * Decide what to do about the one open listing-verify issue per package (APP-290), given the
+ * verifier's outcome: 'mismatch' (Play differs from the repo), 'broken' (the verifier did not
+ * produce a result - never treated as a pass) or 'verified'. issues: [{ number, state, body }].
+ */
+export function planVerifyIssue({ pkg, outcome, issues }) {
+  const marker = `<!-- listing-verify: ${pkg} -->`;
+  const open = issues.find((i) => i.state === 'OPEN' && (i.body ?? '').includes(marker));
+  if (outcome === 'verified') return open ? { action: 'close', issue: open.number } : { action: 'none' };
+  if (outcome !== 'mismatch' && outcome !== 'broken') throw new Error(`Unknown verify outcome "${outcome}"`);
+  return open ? { action: 'comment', issue: open.number, marker } : { action: 'create', marker };
+}
+
+export function verifyIssueBody({ pkg, outcome, mismatches = [], fingerprint = '', runUrl = '' }) {
+  const head =
+    outcome === 'broken'
+      ? 'The listing verifier did not produce a result, so nobody knows whether Play matches the repo. A broken check is not a pass.'
+      : `Google Play's listing for \`${pkg}\` does not match the repo's listing directory${fingerprint ? ` (bundle fingerprint \`${fingerprint}\`)` : ''}.`;
+  return [
+    head,
+    runUrl ? `**Run:** ${runUrl}` : '',
+    '',
+    ...(mismatches.length ? ['### Differences', ...mismatches.map((m) => `- ${m}`), ''] : []),
+    'If the repo is right, re-run the `listing` workflow. If someone changed the Play Console on purpose, copy the change into the repo\'s listing directory first.',
+    'This issue closes itself on the next run that reads Play back and finds it matching.',
+  ]
+    .filter((l, i, a) => !(l === '' && a[i - 1] === ''))
+    .join('\n');
+}
+
+/** Open, update or close the listing-verify issue for one package. `gh` is injectable for tests. */
+export function syncVerifyIssue({ pkg, outcome, mismatches = [], fingerprint = '', repo, runUrl = '', gh = defaultGh }) {
+  const issues = JSON.parse(gh(['issue', 'list', '--repo', repo, '--state', 'open', '--label', VERIFY_LABEL, '--limit', '100', '--json', 'number,state,body']));
+  const plan = planVerifyIssue({ pkg, outcome, issues });
+  const body = verifyIssueBody({ pkg, outcome, mismatches, fingerprint, runUrl });
+  if (plan.action === 'none') return { ...plan, result: `LISTING_VERIFIED: ${pkg}` };
+  if (plan.action === 'close') {
+    gh(['issue', 'close', String(plan.issue), '--repo', repo, '--comment', `Play matches the repo again (read back by ${runUrl || 'the listing workflow'}).`]);
+    return { ...plan, result: `LISTING_VERIFY_ISSUE_CLOSED: #${plan.issue}` };
+  }
+  if (plan.action === 'comment') {
+    gh(['issue', 'comment', String(plan.issue), '--repo', repo, '--body', body]);
+    return { ...plan, result: `LISTING_VERIFY_ISSUE_UPDATED: #${plan.issue}` };
+  }
+  gh(['label', 'create', VERIFY_LABEL, '--repo', repo, '--color', 'b60205', '--description', 'The store does not match the repo listing (read back by the listing workflow)', '--force']);
+  const url = gh(['issue', 'create', '--repo', repo, '--title', `Play listing does not match the repo: ${pkg}`, '--label', VERIFY_LABEL, '--body', `${plan.marker}\n${body}`]).trim();
+  return { ...plan, url, result: `LISTING_VERIFY_ISSUE_OPENED: ${url}` };
+}
+
 export const VIDEO_LABEL = 'demo-video';
 export const VIDEO_TITLE = 'Demo video needed for the Chrome Web Store listing';
 
@@ -478,6 +530,17 @@ async function cli() {
       'dry-run': { type: 'boolean', default: false },
     },
   });
+  if (command === 'verify-issue') {
+    if (!values.bundle || !values['github-repo']) throw new Error('--bundle and --github-repo are required');
+    const manifest = JSON.parse(readFileSync(join(values.bundle, 'listing.json'), 'utf8'));
+    const verifyPath = join(values.bundle, 'verify.json');
+    const v = existsSync(verifyPath) ? JSON.parse(readFileSync(verifyPath, 'utf8')) : { outcome: 'broken', mismatches: [] };
+    const { result } = syncVerifyIssue({ pkg: manifest.package, outcome: v.outcome, mismatches: v.mismatches, fingerprint: manifest.fingerprint, repo: values['github-repo'], runUrl: values['run-url'] });
+    log(result);
+    setOutput('result', result);
+    if (v.outcome !== 'verified') throw new Error(`Listing verification ${v.outcome === 'broken' ? 'did not run' : 'found differences'}: ${result}`);
+    return;
+  }
   if (command === 'chrome-issue') {
     if (!values.bundle || !values['github-repo']) throw new Error('--bundle and --github-repo are required');
     const manifest = JSON.parse(readFileSync(join(values.bundle, 'listing.json'), 'utf8'));
@@ -501,7 +564,7 @@ async function cli() {
   if (report(results, values.repo)) throw new Error('Store listing validation failed (see the errors above).');
   log(`Store listings OK: ${results.map((r) => `${r.target.type}:${r.target.listing}`).join(', ')}`);
   if (command === 'check') return;
-  if (command !== 'bundle') throw new Error(`Unknown command "${command}" (expected check|bundle|chrome-issue)`);
+  if (command !== 'bundle') throw new Error(`Unknown command "${command}" (expected check|bundle|chrome-issue|verify-issue)`);
   const bundles = bundleTargets(results, values.out);
   for (const b of bundles) log(`Bundled ${b.type} ${b.id} → ${join(values.out, b.key)} (fingerprint ${b.manifest.fingerprint})`);
   setOutput('chrome_listing_ids', JSON.stringify(bundles.filter((b) => b.type === 'chrome').map((b) => b.key)));
