@@ -35,6 +35,7 @@ import {
 } from './public-listing.mjs';
 
 export const CHROME_RULES = Object.freeze({
+  name: 75,
   shortDescription: 132,
   description: 16000,
   screenshots: { min: 1, max: 5, sizes: [[1280, 800], [640, 400]] },
@@ -106,6 +107,7 @@ export function loadChromeListing(configPath) {
   const base = dirname(configPath);
   const promo = raw.promotionalImages ?? {};
   return {
+    source: configPath,
     name: raw.name ?? '',
     publisherId: raw.publisherId ?? '',
     shortDescription: raw.shortDescription ?? '',
@@ -121,11 +123,45 @@ export function loadChromeListing(configPath) {
   };
 }
 
-/** Validate a loaded Chrome listing against CHROME_RULES. Returns { errors, warnings, images }. */
-export function checkChromeListing(listing) {
+/**
+ * Read the `name` of the packaged extension's manifest.json (`dir` is the target `path`).
+ * Returns { name } or { note } (why it could not be compared). Never throws.
+ */
+export function readManifestName(dir) {
+  const file = join(dir, 'manifest.json');
+  if (!isFile(file)) return { note: `${file} not found` };
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(file, 'utf8'));
+  } catch (err) {
+    return { note: `${file} is not valid JSON: ${err.message}` };
+  }
+  if (typeof manifest.name !== 'string' || !manifest.name.trim()) return { note: `${file} has no name` };
+  if (/^__MSG_.+__$/.test(manifest.name)) return { note: `${file} name is a localized placeholder (${manifest.name}); compare it by hand` };
+  return { name: manifest.name };
+}
+
+/**
+ * Validate a loaded Chrome listing against CHROME_RULES. Returns { errors, warnings, images }.
+ * `manifest` is the result of readManifestName (omit when no packaged manifest is available:
+ * a warning says the name was not compared; it never passes silently).
+ */
+export function checkChromeListing(listing, manifest) {
   const errors = [];
   const warnings = [];
   const images = { screenshots: [], promo: {} };
+  const file = listing.source ?? 'chrome-store/store.config.json';
+  if (typeof listing.name !== 'string' || !listing.name.trim()) {
+    errors.push(`${file}: "name" is required and must be a non-empty string (the extension name, 1-${CHROME_RULES.name} characters)`);
+  } else if ([...listing.name].length > CHROME_RULES.name) {
+    errors.push(`${file}: "name" is ${[...listing.name].length} characters (max ${CHROME_RULES.name})`);
+  } else if (manifest?.name !== undefined) {
+    if (listing.name !== manifest.name) {
+      errors.push(`${file}: "name" ("${listing.name}") does not match the packaged manifest.json name ("${manifest.name}"); the Chrome name comes from manifest.json, so make them equal`);
+    }
+  } else {
+    warnings.push(`${file}: "name" was not compared with the packaged manifest.json name: ${manifest?.note ?? 'no manifest available to the check'}`);
+  }
   if (!listing.shortDescription.trim()) errors.push('shortDescription is required');
   else if (listing.shortDescription.length > CHROME_RULES.shortDescription) {
     errors.push(`shortDescription is ${listing.shortDescription.length} characters (max ${CHROME_RULES.shortDescription})`);
@@ -283,7 +319,7 @@ export function checkTargets(config, repo, filter = '') {
     let checked;
     try {
       listing = target.type === 'chrome' ? loadChromeListing(path) : loadPlayListing(path);
-      checked = target.type === 'chrome' ? checkChromeListing(listing) : checkPlayListing(listing);
+      checked = target.type === 'chrome' ? checkChromeListing(listing, target.path ? readManifestName(resolve(repo, target.path)) : { note: 'target has no `path`' }) : checkPlayListing(listing);
       // Listings are bundled into artifacts: never let them reach files outside the repo.
       const root = resolve(repo);
       const outside = listingFiles(listing).filter((f) => relative(root, f).startsWith('..'));
@@ -324,7 +360,7 @@ function chromeBundle(result, out) {
   }
   const text = { shortDescription: listing.shortDescription, description: listing.description, category: listing.category, language: listing.language, privacyPolicyUrl: listing.privacyPolicyUrl, supportUrl: listing.supportUrl, websiteUrl: listing.websiteUrl, promoVideo: listing.promoVideo };
   const fp = fingerprint({ text, screenshots: files, promo });
-  const manifest = { type: 'chrome', item_id: target.item_id, publisher_id: listing.publisherId, fingerprint: fp, text, screenshots: files, promo };
+  const manifest = { type: 'chrome', item_id: target.item_id, publisher_id: listing.publisherId, name: listing.name, fingerprint: fp, text, screenshots: files, promo };
   writeFileSync(join(out, 'listing.json'), `${JSON.stringify(manifest, null, 2)}\n`);
   writeFileSync(join(out, 'LISTING.md'), chromeChecklist(manifest));
   return manifest;
@@ -346,6 +382,7 @@ export function chromeChecklist(m, runUrl = '') {
     '1. Open the dashboard link above → **Store listing**.',
     `2. **Screenshots:** remove the old ones, then upload in this order: ${m.screenshots.map((s) => `\`${basename(s.file)}\``).join(', ')}.`,
     ...Object.entries(m.promo).map(([k, v]) => `   - **${k}** (${v.width}×${v.height}): \`${v.file}\``),
+    `   - **Name:** NOT synced by the pipeline (the API cannot set it). The Chrome name comes from the \`name\` in the packaged extension's \`manifest.json\`; \`store.config.json\` \`name\`${m.name ? ` (\`${m.name}\`)` : ''} must match it.`,
     '3. **Short description** and **Detailed description:** replace with the text below if they differ.',
     ...(m.text.promoVideo ? [`   - **Global promo video:** \`${m.text.promoVideo}\``] : []),
     '4. **Save draft**, then **Submit for review** (listing edits stay private until the review passes).',

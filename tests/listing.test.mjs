@@ -279,3 +279,77 @@ test('demo-video checkpoint: closes the open issue once promoVideo is set; dry r
   syncVideoIssue({ manifest: m, repo: 'o/r', gh });
   assert.ok(calls.some((a) => a[1] === 'close' && a[2] === '9'));
 });
+
+// ---- APP-69: store.config.json "name" is validated, not silently dropped
+
+function setName(repo, name) {
+  const p = join(repo, 'chrome-store/store.config.json');
+  const cfg = JSON.parse(readFileSync(p, 'utf8'));
+  if (name === undefined) delete cfg.name;
+  else cfg.name = name;
+  writeFileSync(p, JSON.stringify(cfg));
+  return p;
+}
+const nameErrors = (repo, manifest) => checkChromeListing(loadChromeListing(join(repo, 'chrome-store/store.config.json')), manifest).errors.filter((e) => /"name"/.test(e));
+
+test('chrome name: missing, empty, whitespace and non-string names fail naming the file and field', () => {
+  for (const bad of [undefined, '', '   ', 42]) {
+    const repo = chromeRepo();
+    setName(repo, bad);
+    const errs = nameErrors(repo);
+    assert.equal(errs.length, 1, `name=${JSON.stringify(bad)}`);
+    assert.match(errs[0], /store\.config\.json: "name" is required and must be a non-empty string/);
+  }
+});
+
+test('chrome name: 75 characters is accepted, 76 fails', () => {
+  const ok = chromeRepo();
+  setName(ok, 'n'.repeat(75));
+  assert.deepEqual(nameErrors(ok), []);
+  const long = chromeRepo();
+  setName(long, 'n'.repeat(76));
+  const errs = nameErrors(long);
+  assert.equal(errs.length, 1);
+  assert.match(errs[0], /store\.config\.json: "name" is 76 characters \(max 75\)/);
+});
+
+test('chrome name: must equal the packaged manifest.json name; mismatch fails, match passes', () => {
+  const repo = chromeRepo();
+  assert.deepEqual(nameErrors(repo, { name: 'JSON Workbench' }), []);
+  const errs = nameErrors(repo, { name: 'Other Name' });
+  assert.equal(errs.length, 1);
+  assert.match(errs[0], /"JSON Workbench"\) does not match the packaged manifest\.json name \("Other Name"\)/);
+});
+
+test('chrome name: without a manifest the comparison is skipped with a visible warning, never silently', () => {
+  const repo = chromeRepo();
+  const { errors, warnings } = checkChromeListing(loadChromeListing(join(repo, 'chrome-store/store.config.json')), { note: 'dist/manifest.json not found' });
+  assert.deepEqual(errors.filter((e) => /"name"/.test(e)), []);
+  assert.ok(warnings.some((w) => /"name" was not compared with the packaged manifest\.json name: dist\/manifest\.json not found/.test(w)));
+  const none = checkChromeListing(loadChromeListing(join(repo, 'chrome-store/store.config.json')));
+  assert.ok(none.warnings.some((w) => /was not compared/.test(w)));
+});
+
+test('checkTargets reads the packaged manifest from the target path (dist/manifest.json)', () => {
+  const repo = chromeRepo();
+  const find = () => checkTargets(chromeConfig, repo)[0];
+  // no manifest: skipped with a warning
+  assert.ok(find().warnings.some((w) => /not compared.*manifest\.json not found/.test(w)));
+  write(repo, 'dist/manifest.json', JSON.stringify({ manifest_version: 3, name: 'JSON Workbench', version: '1.0.0' }));
+  assert.deepEqual(find().errors, []);
+  assert.ok(!find().warnings.some((w) => /not compared/.test(w)));
+  write(repo, 'dist/manifest.json', JSON.stringify({ manifest_version: 3, name: 'Renamed', version: '1.0.0' }));
+  assert.ok(find().errors.some((e) => /does not match the packaged manifest\.json name \("Renamed"\)/.test(e)));
+  write(repo, 'dist/manifest.json', JSON.stringify({ manifest_version: 3, name: '__MSG_appName__' }));
+  assert.ok(find().warnings.some((w) => /localized placeholder/.test(w)));
+  setName(repo, undefined);
+  assert.ok(find().errors.some((e) => /"name" is required/.test(e)));
+});
+
+test('chrome checklist says the name is NOT synced and must match manifest.json', () => {
+  const repo = chromeRepo();
+  write(repo, 'dist/manifest.json', JSON.stringify({ name: 'JSON Workbench' }));
+  const [b] = bundleTargets(checkTargets(chromeConfig, repo), mkdtempSync(join(tmpdir(), 'bundle-')));
+  const md = chromeChecklist(b.manifest);
+  assert.match(md, /\*\*Name:\*\* NOT synced.*manifest\.json.*`JSON Workbench`/);
+});
