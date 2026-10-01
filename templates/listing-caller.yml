@@ -3,6 +3,9 @@
 # The daily schedule is a read-only drift check (APP-290): it compares the live Play listing with
 # the repo, changes nothing, and opens ONE 'listing-verify' issue if they differ (e.g. someone
 # edited the Play Console by hand). It closes that issue itself once they match again.
+# It also reads the PUBLIC store pages (APP-296): a listing Play accepted, or a Chrome checklist a
+# person closed, is only 'listing-verified' once the public page shows it; 7 days without that
+# fails the run (Play: 'listing-verify' issue; Chrome: the checklist is reopened with the diff).
 name: listing
 
 on:
@@ -25,7 +28,7 @@ jobs:
   listing:
     permissions:
       contents: read
-      issues: write     # Chrome checklist issue; Play 'listing-verify' issue on a mismatch
+      issues: write     # Chrome checklist; 'listing-verify' / 'listing-committed' issues
       id-token: write   # Play: keyless Google auth (OIDC -> Workload Identity Federation)
     uses: ravitejakamalapuram/release-platform/.github/workflows/listing.yml@v2
     with:

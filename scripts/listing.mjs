@@ -4,7 +4,8 @@
 //   node scripts/listing.mjs check  --config release.json --repo .                 (PR checks)
 //   node scripts/listing.mjs bundle --config release.json --repo . --out listings  (listing.yml)
 //   node scripts/listing.mjs chrome-issue --bundle listings/chrome-0 --github-repo owner/app --run-url <url> [--dry-run]
-//   node scripts/listing.mjs verify-issue --bundle listings/android-0 --github-repo owner/app --run-url <url>  (after play.mjs verify-listing)
+//   node scripts/listing.mjs verify-issue --bundle listings/android-0 --github-repo owner/app --run-url <url> [--public-check]  (after play.mjs verify-listing)
+//   node scripts/listing.mjs chrome-verify --bundle listings/chrome-0 --github-repo owner/app --run-url <url>  (public page vs the closed checklist)
 //
 // Chrome: the target's `listing` points at chrome-store/store.config.json. The Chrome Web Store
 // API cannot change listings, so the bundle is prepared for a person to upload.
@@ -20,6 +21,18 @@ import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { log, main, setOutput, summary, warning } from './lib/gha.mjs';
 import { checkConfig, normalizeTarget, parseTargetFilter } from './validate.mjs';
+import {
+  COMMITTED_LABEL,
+  VERIFIED_LABEL,
+  checkChromePublic,
+  checkPlayPublic,
+  chromeVerdict,
+  committedMarker,
+  planChromeVerify,
+  planCommitted,
+  publicVerdict,
+  REVIEW_SLA_DAYS,
+} from './public-listing.mjs';
 
 export const CHROME_RULES = Object.freeze({
   shortDescription: 132,
@@ -428,7 +441,7 @@ export function planVerifyIssue({ pkg, outcome, issues }) {
 export function verifyIssueBody({ pkg, outcome, mismatches = [], fingerprint = '', runUrl = '' }) {
   const head =
     outcome === 'broken'
-      ? 'The listing verifier did not produce a result, so nobody knows whether Play matches the repo. A broken check is not a pass.'
+      ? 'The listing verifier did not produce a result or could not read the store (VERIFIER_BROKEN), so nobody knows whether Play matches the repo. A broken check is not a pass.'
       : `Google Play's listing for \`${pkg}\` does not match the repo's listing directory${fingerprint ? ` (bundle fingerprint \`${fingerprint}\`)` : ''}.`;
   return [
     head,
@@ -459,6 +472,87 @@ export function syncVerifyIssue({ pkg, outcome, mismatches = [], fingerprint = '
   gh(['label', 'create', VERIFY_LABEL, '--repo', repo, '--color', 'b60205', '--description', 'The store does not match the repo listing (read back by the listing workflow)', '--force']);
   const url = gh(['issue', 'create', '--repo', repo, '--title', `Play listing does not match the repo: ${pkg}`, '--label', VERIFY_LABEL, '--body', `${plan.marker}\n${body}`]).trim();
   return { ...plan, url, result: `LISTING_VERIFY_ISSUE_OPENED: ${url}` };
+}
+
+const issueNumber = (url) => Number(url.trim().match(/\/issues\/(\d+)$/)?.[1]);
+
+/**
+ * Post-review public-page check for one Play package (APP-296). Runs only after the API read-back
+ * verified the bundle. Keeps the `listing-committed` record for (package, fingerprint) - its date
+ * starts the review clock - and closes it with `listing-verified` once the public page matches.
+ * Returns the outcome for the listing-verify issue: { outcome, mismatches, line }.
+ */
+export async function playPublicReport({ manifest, repo, now = new Date(), fetchImpl = fetch, gh = defaultGh }) {
+  const pkg = manifest.package;
+  const fp = manifest.fingerprint;
+  const issues = JSON.parse(gh(['issue', 'list', '--repo', repo, '--state', 'all', '--label', COMMITTED_LABEL, '--limit', '100', '--json', 'number,state,body,labels']));
+  const plan = planCommitted({ pkg, fingerprint: fp, issues, now });
+  for (const n of plan.superseded) gh(['issue', 'close', String(n), '--repo', repo, '--comment', `Superseded: the Play listing for \`${pkg}\` changed again (fingerprint \`${fp}\`) before this one was confirmed public.`]);
+  if (plan.action === 'done') return { outcome: 'verified', mismatches: [], line: `PUBLIC_VERIFIED: ${pkg} fingerprint ${fp} was confirmed public in #${plan.issue}` };
+  let issue = plan.issue;
+  if (plan.action === 'create') {
+    gh(['label', 'create', COMMITTED_LABEL, '--repo', repo, '--color', 'c5def5', '--description', 'Play accepted this listing; waiting for the public page to show it', '--force']);
+    const body = [
+      `${committedMarker(pkg, fp)}${plan.since} -->`,
+      `Play's API holds the repo listing for \`${pkg}\` (fingerprint \`${fp}\`) as of ${plan.since.slice(0, 10)}. Listing changes go through review before users see them.`,
+      '',
+      `The daily \`listing\` run compares the public page (title, description, screenshot count) with the repo and closes this issue with the \`${VERIFIED_LABEL}\` label once they match. If they still differ ${REVIEW_SLA_DAYS} days after the date above, the run fails and the \`listing-verify\` issue lists the differences.`,
+    ].join('\n');
+    issue = issueNumber(gh(['issue', 'create', '--repo', repo, '--title', `Play listing waiting for public confirmation: ${pkg} (${fp})`, '--label', COMMITTED_LABEL, '--body', body]));
+  }
+  const check = await checkPlayPublic({ bundle: manifest, fetchImpl });
+  const v = publicVerdict({ check, since: plan.since, now });
+  if (v.state === 'verified') {
+    gh(['label', 'create', VERIFIED_LABEL, '--repo', repo, '--color', '0e8a16', '--description', 'The public store page matches the repo listing', '--force']);
+    gh(['issue', 'edit', String(issue), '--repo', repo, '--add-label', VERIFIED_LABEL]);
+    gh(['issue', 'close', String(issue), '--repo', repo, '--comment', `The public Play page matches the repo listing (title, description, screenshot count). Confirmed ${now.toISOString().slice(0, 10)}.`]);
+    return { outcome: 'verified', mismatches: [], line: `PUBLIC_VERIFIED: ${pkg} fingerprint ${fp} (closed #${issue})` };
+  }
+  const tag = { pending: `PUBLIC_PENDING (in review since ${plan.since.slice(0, 10)}, fails after ${REVIEW_SLA_DAYS} days)`, overdue: `PUBLIC_MISMATCH (committed ${plan.since.slice(0, 10)}, more than ${REVIEW_SLA_DAYS} days ago)`, broken: 'VERIFIER_BROKEN' }[v.state];
+  return { outcome: v.outcome, mismatches: v.mismatches, line: `${tag}: ${pkg} #${issue}`, pending: v.state === 'pending' };
+}
+
+/**
+ * Chrome: the checklist issue for this fingerprint closes only when the public page confirms it.
+ * A person closing it means "submitted". Returns { result, failed, mismatches }.
+ */
+export async function chromeVerify({ manifest, repo, runUrl = '', now = new Date(), fetchImpl = fetch, gh = defaultGh }) {
+  const issues = JSON.parse(gh(['issue', 'list', '--repo', repo, '--state', 'all', '--label', ISSUE_LABEL, '--limit', '100', '--json', 'number,state,body,closedAt,labels']));
+  const issue = issues.find((i) => (i.body ?? '').includes(`listing-fingerprint: ${manifest.fingerprint}`));
+  const plan = planChromeVerify(issue);
+  const id = `${manifest.item_id} (${manifest.fingerprint})`;
+  if (plan === 'no-checklist') return { result: `CHROME_LISTING_NO_CHECKLIST: no store-listing issue for ${id}; run the listing workflow to open one`, failed: false, mismatches: [] };
+  if (plan === 'awaiting-submission') return { result: `CHROME_LISTING_AWAITING_SUBMISSION: #${issue.number} is still open`, failed: false, mismatches: [] };
+  const check = await checkChromePublic({ manifest, fetchImpl });
+  const v = chromeVerdict({ issue, check, now });
+  const n = String(issue.number);
+  const diff = check.mismatches.map((m) => `- ${m}`).join('\n');
+  if (v.action === 'verify') {
+    gh(['label', 'create', VERIFIED_LABEL, '--repo', repo, '--color', '0e8a16', '--description', 'The public store page matches the repo listing', '--force']);
+    gh(['issue', 'edit', n, '--repo', repo, '--add-label', VERIFIED_LABEL, ...((issue.labels ?? []).some((l) => (l.name ?? l) === VERIFY_LABEL) ? ['--remove-label', VERIFY_LABEL] : [])]);
+    const msg = `The public Chrome Web Store page matches this listing (description, screenshot count). Confirmed ${now.toISOString().slice(0, 10)}${runUrl ? ` by ${runUrl}` : ''}.`;
+    gh(issue.state === 'OPEN' ? ['issue', 'close', n, '--repo', repo, '--comment', msg] : ['issue', 'comment', n, '--repo', repo, '--body', msg]);
+    return { result: `CHROME_LISTING_VERIFIED: #${n}`, failed: false, mismatches: [] };
+  }
+  if (v.action === 'still-verified') return { result: `CHROME_LISTING_VERIFIED: #${n} still matches the public page`, failed: false, mismatches: [] };
+  if (v.action === 'drift') {
+    gh(['label', 'create', VERIFY_LABEL, '--repo', repo, '--color', 'b60205', '--description', 'The store does not match the repo listing (read back by the listing workflow)', '--force']);
+    gh(['issue', 'reopen', n, '--repo', repo, '--comment', [`The public Chrome Web Store page matched this listing before, but it differs now${runUrl ? ` (${runUrl})` : ''}:`, '', diff, '', 'Was the listing edited in the Developer Dashboard? Bring the store back to the repo listing (or change the repo), then close this issue again; the daily run confirms it.'].join('\n')]);
+    gh(['issue', 'edit', n, '--repo', repo, '--remove-label', VERIFIED_LABEL, '--add-label', VERIFY_LABEL]);
+    return { result: `CHROME_LISTING_MISMATCH: #${n} drifted after it was confirmed; reopened`, failed: true, mismatches: check.mismatches };
+  }
+  if (v.action === 'reopen') {
+    gh(['label', 'create', VERIFY_LABEL, '--repo', repo, '--color', 'b60205', '--description', 'The store does not match the repo listing (read back by the listing workflow)', '--force']);
+    gh(['issue', 'reopen', n, '--repo', repo, '--comment', [`This was closed on ${issue.closedAt.slice(0, 10)}, but ${REVIEW_SLA_DAYS} days later the public Chrome Web Store page still differs from this listing${runUrl ? ` (${runUrl})` : ''}:`, '', diff, '', 'Check the Developer Dashboard: was the listing submitted for review, and did the review pass? Close this issue again once it is submitted; the daily run confirms it.'].join('\n')]);
+    gh(['issue', 'edit', n, '--repo', repo, '--add-label', VERIFY_LABEL]);
+    return { result: `CHROME_LISTING_MISMATCH: reopened #${n}`, failed: true, mismatches: check.mismatches };
+  }
+  const result = {
+    pending: `CHROME_LISTING_PENDING: #${n} closed ${issue.closedAt?.slice(0, 10)}; the public page differs (review may still be running, fails after ${REVIEW_SLA_DAYS} days)`,
+    'still-open': `CHROME_LISTING_MISMATCH: #${n} is reopened and the public page still differs`,
+    broken: `VERIFIER_BROKEN: #${n} could not be checked`,
+  }[v.action];
+  return { result, failed: v.failed, mismatches: check.mismatches };
 }
 
 export const VIDEO_LABEL = 'demo-video';
@@ -528,6 +622,7 @@ async function cli() {
       'github-repo': { type: 'string' },
       'run-url': { type: 'string', default: '' },
       'dry-run': { type: 'boolean', default: false },
+      'public-check': { type: 'boolean', default: false },
     },
   });
   if (command === 'verify-issue') {
@@ -535,10 +630,29 @@ async function cli() {
     const manifest = JSON.parse(readFileSync(join(values.bundle, 'listing.json'), 'utf8'));
     const verifyPath = join(values.bundle, 'verify.json');
     const v = existsSync(verifyPath) ? JSON.parse(readFileSync(verifyPath, 'utf8')) : { outcome: 'broken', mismatches: [] };
+    // The public page is checked only once Play's API holds the bundle: otherwise its state is unknown.
+    if (values['public-check'] && v.outcome === 'verified') {
+      const pub = await playPublicReport({ manifest, repo: values['github-repo'] });
+      log(pub.line);
+      for (const m of pub.mismatches) log(`  ${m}`);
+      if (pub.pending) warning(pub.line);
+      Object.assign(v, { outcome: pub.outcome, mismatches: pub.mismatches });
+    }
     const { result } = syncVerifyIssue({ pkg: manifest.package, outcome: v.outcome, mismatches: v.mismatches, fingerprint: manifest.fingerprint, repo: values['github-repo'], runUrl: values['run-url'] });
     log(result);
     setOutput('result', result);
-    if (v.outcome !== 'verified') throw new Error(`Listing verification ${v.outcome === 'broken' ? 'did not run' : 'found differences'}: ${result}`);
+    if (v.outcome !== 'verified') throw new Error(`Listing verification ${v.outcome === 'broken' ? 'did not run or could not read the store' : 'found differences'}: ${result}`);
+    return;
+  }
+  if (command === 'chrome-verify') {
+    if (!values.bundle || !values['github-repo']) throw new Error('--bundle and --github-repo are required');
+    const manifest = JSON.parse(readFileSync(join(values.bundle, 'listing.json'), 'utf8'));
+    const { result, failed, mismatches } = await chromeVerify({ manifest, repo: values['github-repo'], runUrl: values['run-url'] });
+    log(result);
+    for (const m of mismatches) log(`  ${m}`);
+    setOutput('result', result);
+    summary(`### Chrome listing (public page)\n\n${result}${mismatches.length ? `\n\n${mismatches.map((m) => `- ${m}`).join('\n')}` : ''}`);
+    if (failed) throw new Error(result);
     return;
   }
   if (command === 'chrome-issue') {
@@ -564,7 +678,7 @@ async function cli() {
   if (report(results, values.repo)) throw new Error('Store listing validation failed (see the errors above).');
   log(`Store listings OK: ${results.map((r) => `${r.target.type}:${r.target.listing}`).join(', ')}`);
   if (command === 'check') return;
-  if (command !== 'bundle') throw new Error(`Unknown command "${command}" (expected check|bundle|chrome-issue|verify-issue)`);
+  if (command !== 'bundle') throw new Error(`Unknown command "${command}" (expected check|bundle|chrome-issue|verify-issue|chrome-verify)`);
   const bundles = bundleTargets(results, values.out);
   for (const b of bundles) log(`Bundled ${b.type} ${b.id} → ${join(values.out, b.key)} (fingerprint ${b.manifest.fingerprint})`);
   setOutput('chrome_listing_ids', JSON.stringify(bundles.filter((b) => b.type === 'chrome').map((b) => b.key)));
