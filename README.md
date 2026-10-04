@@ -485,8 +485,9 @@ For a Chrome extension whose popup is screenshotted by a Playwright spec, copy
 committed images (default `extension/store-assets/`) would change. "Run workflow" on the PR branch
 commits the refreshed images; close and reopen the PR so CI runs on the new head. The merge then
 triggers the listing workflow, which opens the dashboard checklist. Inputs: `directory`, `build`,
-`spec`, `assets`, `node_version`. Don't make the check required until one manual run has produced
-the baseline on the runner.
+`spec`, `assets`, `node_version`. Run it manually once to produce the baseline on the runner, and
+keep the check optional: the caller's path filter skips it on unrelated PRs, and a required check
+that is skipped stays pending.
 
 ## Dashboard
 

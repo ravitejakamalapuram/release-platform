@@ -6,8 +6,8 @@
 #                      PR afterwards so CI runs on the new head.
 # The app owns the screenshot spec: a Playwright test that writes PNGs into `assets` when
 # STORE_ASSETS=1. Callers (see templates/store-screenshots-caller.yml) grant `contents: read` for
-# PR runs and `contents: write` for manual runs. Do not make the check required until one manual
-# run on the runner has produced the baseline images.
+# PR runs and `contents: write` for manual runs. Run it manually once to produce the baseline on the
+# runner. Keep the check optional: callers path-filter it, and a skipped required check stays pending.
 name: store-screenshots
 
 on:
@@ -73,7 +73,9 @@ jobs:
           ASSETS: ${{ inputs.assets }}
           WORKFLOW: ${{ github.workflow }}
         run: |
-          if ! git diff --exit-code --stat -- "$ASSETS"; then
+          # --porcelain also lists untracked files, so a newly added screenshot counts as stale too.
+          if [ -n "$(git status --porcelain -- "$ASSETS")" ]; then
+            git status --short -- "$ASSETS"
             echo "::error::The UI no longer matches the store screenshots. Run the '$WORKFLOW' workflow on this branch (Actions > $WORKFLOW > Run workflow > Use workflow from), then close and reopen this PR."
             exit 1
           fi
@@ -89,7 +91,11 @@ jobs:
         shell: bash
         working-directory: ${{ inputs.directory }}
     steps:
-      - uses: actions/checkout@v7 # keeps credentials: the last step pushes the refreshed images
+      # No persisted credentials: npm ci, the build and the spec run without the write token. Only
+      # the final push step gets it.
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v7
         with:
           node-version: ${{ inputs.node_version }}
@@ -111,10 +117,13 @@ jobs:
         working-directory: .
         env:
           ASSETS: ${{ inputs.assets }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           git add -- "$ASSETS"
           if git diff --cached --quiet; then echo "Store images already up to date."; exit 0; fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -m "chore(store): refresh screenshots"
-          git push
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          echo "::add-mask::$auth"
+          git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" push origin "HEAD:refs/heads/$GITHUB_REF_NAME"
