@@ -141,7 +141,19 @@ jobs:
         env:
           ASSETS: ${{ inputs.assets }}
         run: |
+          # The artifact was produced by the app's code, so accept only PNGs: no symlinks, and no new
+          # or changed file of any other kind.
+          if [ -n "$(find "$ASSETS" -type l)" ]; then
+            echo "::error::The screenshot artifact contains a symlink; refusing to commit it."
+            exit 1
+          fi
           git add -- "$ASSETS"
+          unexpected=$(git diff --cached --name-only -- "$ASSETS" | grep -v '\.png$' || true)
+          if [ -n "$unexpected" ]; then
+            printf '%s\n' "$unexpected"
+            echo "::error::The screenshot artifact changes files that are not PNGs; refusing to commit them."
+            exit 1
+          fi
           if git diff --cached --quiet; then echo "Store images already up to date."; exit 0; fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
