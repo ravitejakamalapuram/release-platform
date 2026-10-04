@@ -26,7 +26,7 @@ concurrency:
 jobs:
   screenshots:
     permissions:
-      contents: write # PR runs only read; a manual run commits the refreshed images
+      contents: write # PR runs only read; on a manual run only the separate commit job writes
     uses: ravitejakamalapuram/release-platform/.github/workflows/store-screenshots.yml@v2
     # with:
     #   directory: extension

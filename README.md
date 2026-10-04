@@ -86,7 +86,8 @@ is executing. So the platform keeps one invariant:
 | status · `status` | no — reads `apps.yaml` from release-platform only | yes | none |
 | app-ci · all jobs | yes | **no** | **none** |
 | store-screenshots · `check` (PR) | yes | **no** | **none** (read-only token) |
-| store-screenshots · `refresh` (manual) | yes | **no** | none (`contents: write`, to commit images) |
+| store-screenshots · `refresh` (manual) | yes | **no** | **none** (read-only token; uploads the images as an artifact) |
+| store-screenshots · `commit` (manual) | no — commits the downloaded images only | no | none (`contents: write`, to commit images) |
 
 Jobs run on fresh hosted VMs, so a build job cannot tamper with a later publish job except
 through its artifacts, which publish jobs only upload to the store and never execute. Values from
