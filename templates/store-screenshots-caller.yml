@@ -1,0 +1,35 @@
+# Copy to .github/workflows/store-screenshots.yml in your app repo (Chrome extensions with a
+# Playwright screenshot spec). On a PR that touches UI code it fails if the store screenshots are
+# stale; "Run workflow" on the PR branch commits refreshed images. Set the `paths` to your UI code
+# and your `assets` folder. Keep this check optional: a required check that a path filter skips
+# stays pending and blocks unrelated PRs.
+name: store-screenshots
+
+on:
+  pull_request:
+    paths:
+      - 'extension/src/**'
+      - '!extension/src/**/*.test.ts'
+      - '!extension/src/**/*.test.tsx'
+      - 'extension/index.html'
+      - 'extension/icons/**'
+      - 'extension/e2e/store-shots.spec.ts'
+      - 'extension/store-assets/**'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: store-screenshots-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  screenshots:
+    permissions:
+      contents: write # PR runs only read; a manual run commits the refreshed images
+    uses: ravitejakamalapuram/release-platform/.github/workflows/store-screenshots.yml@v2
+    # with:
+    #   directory: extension
+    #   build: npx vite build
+    #   spec: e2e/store-shots.spec.ts
+    #   assets: extension/store-assets
