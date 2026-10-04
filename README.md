@@ -85,6 +85,8 @@ is executing. So the platform keeps one invariant:
 | promote · `play` | no — never checks out the caller repo | yes | none |
 | status · `status` | no — reads `apps.yaml` from release-platform only | yes | none |
 | app-ci · all jobs | yes | **no** | **none** |
+| store-screenshots · `check` (PR) | yes | **no** | **none** (read-only token) |
+| store-screenshots · `refresh` (manual) | yes | **no** | none (`contents: write`, to commit images) |
 
 Jobs run on fresh hosted VMs, so a build job cannot tamper with a later publish job except
 through its artifacts, which publish jobs only upload to the store and never execute. Values from
@@ -474,6 +476,18 @@ touch Play at the same time. Security is the same as for releases: only the Play
 `id-token`, and it runs platform scripts on a bundle that a job without store access built from
 the repo's files.
 
+### Store screenshots
+
+For a Chrome extension whose popup is screenshotted by a Playwright spec, copy
+[`templates/store-screenshots-caller.yml`](templates/store-screenshots-caller.yml) to
+`.github/workflows/store-screenshots.yml`. On a pull request that touches UI code,
+`store-screenshots.yml` rebuilds the app, reruns the spec with `STORE_ASSETS=1` and fails if the
+committed images (default `extension/store-assets/`) would change. "Run workflow" on the PR branch
+commits the refreshed images; close and reopen the PR so CI runs on the new head. The merge then
+triggers the listing workflow, which opens the dashboard checklist. Inputs: `directory`, `build`,
+`spec`, `assets`, `node_version`. Don't make the check required until one manual run has produced
+the baseline on the runner.
+
 ## Dashboard
 
 [`dashboard.yml`](.github/workflows/dashboard.yml) runs daily (and on demand) and calls the
@@ -596,7 +610,7 @@ yq -o=json . examples/chrome-only.release.yaml > /tmp/r.json && node scripts/val
 Layout:
 
 ```
-.github/workflows/  release.yml promote.yml status.yml app-ci.yml (reusable) · dashboard.yml ci.yml move-major-tag.yml (this repo)
+.github/workflows/  release.yml promote.yml status.yml app-ci.yml store-screenshots.yml (reusable) · dashboard.yml ci.yml move-major-tag.yml (this repo)
 scripts/            cws.mjs play.mjs version.mjs validate.mjs package-chrome.mjs changelog.mjs status.mjs summary.mjs
 scripts/lib/        http.mjs (Google API client) gha.mjs (runner helpers) schema.mjs (tiny JSON Schema validator)
 schema/             release.schema.json

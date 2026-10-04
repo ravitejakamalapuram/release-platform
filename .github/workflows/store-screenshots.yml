@@ -1,0 +1,120 @@
+# Reusable: keeps an app's store screenshots in step with its real UI.
+#   pull_request:      regenerates the screenshots and fails if the committed ones would change, so a
+#                      UI change cannot merge with stale store images. Read-only token, no secrets.
+#   workflow_dispatch: regenerates and commits the new images to the branch the run was started on.
+#                      Commits made with GITHUB_TOKEN start no other workflows: close and reopen the
+#                      PR afterwards so CI runs on the new head.
+# The app owns the screenshot spec: a Playwright test that writes PNGs into `assets` when
+# STORE_ASSETS=1. Callers (see templates/store-screenshots-caller.yml) grant `contents: read` for
+# PR runs and `contents: write` for manual runs. Do not make the check required until one manual
+# run on the runner has produced the baseline images.
+name: store-screenshots
+
+on:
+  workflow_call:
+    inputs:
+      directory:
+        description: 'Directory (inside the caller repo) with package.json and package-lock.json'
+        type: string
+        default: 'extension'
+      build:
+        description: 'Command run in `directory` before the screenshots, e.g. a production build'
+        type: string
+        default: 'npx vite build'
+      spec:
+        description: 'Playwright spec that writes the screenshots, relative to `directory`'
+        type: string
+        default: 'e2e/store-shots.spec.ts'
+      assets:
+        description: 'Folder of the committed screenshots, relative to the repo root'
+        type: string
+        default: 'extension/store-assets'
+      node_version:
+        type: string
+        default: '20'
+
+permissions: {}
+
+jobs:
+  check:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.directory }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.directory }}/package-lock.json
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Build
+        env:
+          BUILD: ${{ inputs.build }}
+        run: bash -c "$BUILD"
+      - name: Take screenshots
+        env:
+          SPEC: ${{ inputs.spec }}
+          STORE_ASSETS: '1'
+          TZ: UTC
+        run: npx playwright test "$SPEC"
+      - name: Stale store images fail the pull request
+        working-directory: .
+        env:
+          ASSETS: ${{ inputs.assets }}
+          WORKFLOW: ${{ github.workflow }}
+        run: |
+          if ! git diff --exit-code --stat -- "$ASSETS"; then
+            echo "::error::The UI no longer matches the store screenshots. Run the '$WORKFLOW' workflow on this branch (Actions > $WORKFLOW > Run workflow > Use workflow from), then close and reopen this PR."
+            exit 1
+          fi
+
+  refresh:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write # commits the refreshed images to the selected branch
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.directory }}
+    steps:
+      - uses: actions/checkout@v7 # keeps credentials: the last step pushes the refreshed images
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.directory }}/package-lock.json
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Build
+        env:
+          BUILD: ${{ inputs.build }}
+        run: bash -c "$BUILD"
+      - name: Take screenshots
+        env:
+          SPEC: ${{ inputs.spec }}
+          STORE_ASSETS: '1'
+          TZ: UTC
+        run: npx playwright test "$SPEC"
+      - name: Commit refreshed images
+        working-directory: .
+        env:
+          ASSETS: ${{ inputs.assets }}
+        run: |
+          git add -- "$ASSETS"
+          if git diff --cached --quiet; then echo "Store images already up to date."; exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore(store): refresh screenshots"
+          git push
