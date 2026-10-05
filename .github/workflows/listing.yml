@@ -146,6 +146,9 @@ jobs:
           name: listings
           path: listings/
           if-no-files-found: ignore
+          # Callers run this workflow twice in one run (dry-run preview, then sync), and artifact
+          # names must be unique per run. Safe: sync starts only after every preview job finished.
+          overwrite: true
 
   # Chrome Web Store: no store access at all, only permission to open the checklist issue.
   chrome:
@@ -194,6 +197,8 @@ jobs:
         with:
           name: listing-chrome-${{ matrix.key }}
           path: listings/${{ matrix.key }}/
+          # Same name in the preview and sync calls of one run; see the `listings` upload above.
+          overwrite: true
 
   # Holds id-token: runs ONLY release-platform scripts on the downloaded bundle (see release.yml).
   android:

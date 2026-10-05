@@ -1,9 +1,12 @@
 # Reusable: keeps an app's store screenshots in step with its real UI.
 #   pull_request:      regenerates the screenshots and fails if the committed ones would change, so a
 #                      UI change cannot merge with stale store images. Read-only token, no secrets.
-#   workflow_dispatch: regenerates and commits the new images to the branch the run was started on.
-#                      Commits made with GITHUB_TOKEN start no other workflows: close and reopen the
-#                      PR afterwards so CI runs on the new head.
+#   workflow_dispatch: regenerates and commits the new images to the branch the run was started on,
+#                      in two jobs. `refresh` runs the app's npm ci, build and spec with a read-only
+#                      token and uploads the images as an artifact; `commit` holds contents: write on
+#                      a fresh runner that runs none of the app's code, and only downloads the images
+#                      and pushes them. Commits made with GITHUB_TOKEN start no other workflows: close
+#                      and reopen the PR afterwards so CI runs on the new head.
 # The app owns the screenshot spec: a Playwright test that writes PNGs into `assets` when
 # STORE_ASSETS=1. Callers (see templates/store-screenshots-caller.yml) grant `contents: read` for
 # PR runs and `contents: write` for manual runs. Run it manually once to produce the baseline on the
@@ -80,19 +83,20 @@ jobs:
             exit 1
           fi
 
+  # Runs the app's code (npm ci, build, spec) with a read-only token and hands the images to
+  # `commit` as an artifact. Any dependency install script, git hook or leftover process here can
+  # see nothing that writes to the repo.
   refresh:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
-      contents: write # commits the refreshed images to the selected branch
+      contents: read
     defaults:
       run:
         shell: bash
         working-directory: ${{ inputs.directory }}
     steps:
-      # No persisted credentials: npm ci, the build and the spec run without the write token. Only
-      # the final push step gets it.
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
@@ -113,17 +117,45 @@ jobs:
           STORE_ASSETS: '1'
           TZ: UTC
         run: npx playwright test "$SPEC"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: store-screenshots
+          path: ${{ inputs.assets }}/
+          if-no-files-found: error
+
+  # Holds the write token on a fresh runner that runs none of the app's code: checkout, the
+  # artifact from `refresh`, and git.
+  commit:
+    needs: refresh
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write # commits the refreshed images to the selected branch
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: store-screenshots
+          path: ${{ inputs.assets }}
       - name: Commit refreshed images
-        working-directory: .
         env:
           ASSETS: ${{ inputs.assets }}
-          GH_TOKEN: ${{ github.token }}
         run: |
+          # The artifact was produced by the app's code, so accept only PNGs: no symlinks, and no new
+          # or changed file of any other kind.
+          if [ -n "$(find "$ASSETS" -type l)" ]; then
+            echo "::error::The screenshot artifact contains a symlink; refusing to commit it."
+            exit 1
+          fi
           git add -- "$ASSETS"
+          unexpected=$(git diff --cached --name-only -- "$ASSETS" | grep -v '\.png$' || true)
+          if [ -n "$unexpected" ]; then
+            printf '%s\n' "$unexpected"
+            echo "::error::The screenshot artifact changes files that are not PNGs; refusing to commit them."
+            exit 1
+          fi
           if git diff --cached --quiet; then echo "Store images already up to date."; exit 0; fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -m "chore(store): refresh screenshots"
-          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
-          echo "::add-mask::$auth"
-          git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" push origin "HEAD:refs/heads/$GITHUB_REF_NAME"
+          git push origin "HEAD:refs/heads/$GITHUB_REF_NAME"
