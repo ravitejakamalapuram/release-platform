@@ -65,12 +65,15 @@ export async function run({ token, project, appId, ghToken, repo, dry = false, w
   const cHead = { authorization: `Bearer ${token}` };
   const q = (pairs) => pairs.map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&');
 
-  const report = await getJson(fetchImpl, `${api}/reports/topIssues?${q([
+  const reportUrl = (pageToken) => `${api}/reports/topIssues?${q([
     ['filter.interval.startTime', new Date(now - windowDays * 864e5).toISOString()],
     ['filter.interval.endTime', now.toISOString()],
     ['filter.issue.errorTypes', 'FATAL'], ['filter.issue.errorTypes', 'ANR'], ['pageSize', '25'],
-  ])}`, cHead);
-  const groups = (report.groups ?? []).filter((g) => g.issue?.id && g.issue.state !== 'CLOSED');
+    ...(pageToken ? [['pageToken', pageToken]] : []),
+  ])}`;
+  let report = await getJson(fetchImpl, reportUrl(), cHead);
+  const openGroups = (r) => (r.groups ?? []).filter((g) => g.issue?.id && g.issue.state !== 'CLOSED');
+  const groups = openGroups(report);
 
   const known = new Set();
   for (let page = 1; ; page++) {
@@ -79,7 +82,13 @@ export async function run({ token, project, appId, ghToken, repo, dry = false, w
     if (rows.length < 100) break;
   }
 
-  const fresh = groups.filter((g) => !known.has(g.issue.id)).slice(0, max);
+  const isFresh = (g) => !known.has(g.issue.id);
+  // Keep reading report pages until max unseen groups are found, so a full first page of already-filed crashes cannot hide new ones.
+  for (let pages = 1; groups.filter(isFresh).length < max && report.nextPageToken && pages < 20; pages++) {
+    report = await getJson(fetchImpl, reportUrl(report.nextPageToken), cHead);
+    groups.push(...openGroups(report));
+  }
+  const fresh = groups.filter(isFresh).slice(0, max);
   log(`${groups.length} open crash issues in ${windowDays} d, ${fresh.length} new to file${dry ? ' (dry run)' : ''}`);
   const filed = [];
   for (const g of fresh) {

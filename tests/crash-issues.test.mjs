@@ -44,6 +44,19 @@ test('files only crashes not already filed, skips closed, caps at max', async ()
   assert.equal(f.calls[0].headers.authorization, 'Bearer t');
 });
 
+test('reads later report pages when the first page is all filed already', async () => {
+  const f = fakeFetch([
+    { body: { groups: [group('old1')], nextPageToken: 'tok2' } },
+    { body: [{ body: '<!-- crashlytics-issue:old1 -->' }] },
+    { body: { groups: [group('new9')] }, match: (u) => assert.match(u, /pageToken=tok2/) },
+    { body: { events: [] } },
+    { status: 201, body: { number: 9 } },
+  ]);
+  const filed = await run(opts(f));
+  assert.deepEqual(filed.map((x) => x.number), [9]);
+  assert.equal(f.remaining(), 0);
+});
+
 test('dry run files nothing and a missing sample event still files', async () => {
   const f = fakeFetch([
     { body: { groups: [group('new1')] } },
