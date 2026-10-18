@@ -19,14 +19,18 @@ const version = (text) => Number(/@release-platform\/report-problem v(\d+)/.exec
 /** Returns { status, detail }; status is n/a, ok, missing, outdated, modified or not loaded. */
 export function check(repo, platform) {
   const files = walk(repo);
-  if (!files.some((f) => basename(f) === 'manifest.json')) return { status: 'n/a', detail: 'no manifest.json (not a Chrome extension)' };
+  const isExtensionManifest = (f) => {
+    if (basename(f) !== 'manifest.json') return false;
+    try { return Number.isInteger(JSON.parse(readFileSync(f, 'utf8')).manifest_version); } catch { return false; }
+  };
+  if (!files.some(isExtensionManifest)) return { status: 'n/a', detail: 'no Chrome extension manifest' };
   const canonical = readFileSync(join(platform, 'modules/report-problem/report-problem.js'), 'utf8');
   const copy = files.find((f) => basename(f) === 'report-problem.js');
   if (!copy) return { status: 'missing', detail: 'see modules/report-problem/README.md in release-platform' };
   const text = readFileSync(copy, 'utf8');
   if (version(text) < version(canonical)) return { status: 'outdated', detail: `v${version(text)}, current is v${version(canonical)}` };
   if (text !== canonical) return { status: 'modified', detail: 'differs from the platform copy; re-copy it instead of editing' };
-  const loaded = files.some((f) => f.endsWith('.html') && /<script[^>]+src="[^"]*report-problem\.js"/.test(readFileSync(f, 'utf8')));
+  const loaded = files.some((f) => f.endsWith('.html') && /<script[^>]+src=["'][^"']*report-problem\.js["']/.test(readFileSync(f, 'utf8').replace(/<!--[\s\S]*?-->/g, '')));
   return loaded ? { status: 'ok', detail: `v${version(text)}` } : { status: 'not loaded', detail: 'no HTML page includes report-problem.js' };
 }
 

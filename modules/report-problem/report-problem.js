@@ -61,7 +61,8 @@
   }
 
   function prompt() {
-    if (shown || !document.body) return;
+    if (shown) return;
+    if (!document.body) { document.addEventListener('DOMContentLoaded', prompt, { once: true }); return; }
     shown = true;
     var bar = document.createElement('div'), s = cfg.strings;
     bar.setAttribute('role', 'alert');
@@ -71,7 +72,7 @@
     function btn(text, fn) {
       var b = document.createElement('button');
       b.textContent = text; b.style.cssText = 'font:inherit;cursor:pointer;border:1px solid #fff;background:none;color:inherit;border-radius:6px;padding:4px 10px';
-      b.onclick = fn; return b;
+      b.onclick = function () { shown = false; fn(); }; return b;
     }
     bar.appendChild(document.createTextNode(s.message));
     bar.appendChild(btn(s.report, function () { open(); bar.remove(); }));

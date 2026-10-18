@@ -20,11 +20,13 @@ const page = '<script src="report-problem.js"></script>';
 
 test('statuses', () => {
   assert.equal(check(app({ 'a.txt': '' }), platform).status, 'n/a');
-  assert.equal(check(app({ 'manifest.json': '{}' }), platform).status, 'missing');
-  assert.equal(check(app({ 'manifest.json': '{}', 'report-problem.js': '/* @release-platform/report-problem v0 */', 'x.html': page }), platform).status, 'outdated');
-  assert.equal(check(app({ 'manifest.json': '{}', 'report-problem.js': canonical + '//x', 'x.html': page }), platform).status, 'modified');
-  assert.equal(check(app({ 'manifest.json': '{}', 'report-problem.js': canonical }), platform).status, 'not loaded');
-  assert.equal(check(app({ 'manifest.json': '{}', 'report-problem.js': canonical, 'x.html': page }), platform).status, 'ok');
-  process.chdir(app({ 'manifest.json': '{}', 'report-problem.js': canonical, 'x.html': page }));
+  assert.equal(check(app({ 'manifest.json': '{"name":"web app"}' }), platform).status, 'n/a');
+  assert.equal(check(app({ 'manifest.json': '{"manifest_version":3}' }), platform).status, 'missing');
+  assert.equal(check(app({ 'manifest.json': '{"manifest_version":3}', 'report-problem.js': canonical, 'x.html': '<!-- ' + page + ' -->' }), platform).status, 'not loaded');
+  assert.equal(check(app({ 'manifest.json': '{"manifest_version":3}', 'report-problem.js': '/* @release-platform/report-problem v0 */', 'x.html': page }), platform).status, 'outdated');
+  assert.equal(check(app({ 'manifest.json': '{"manifest_version":3}', 'report-problem.js': canonical + '//x', 'x.html': page }), platform).status, 'modified');
+  assert.equal(check(app({ 'manifest.json': '{"manifest_version":3}', 'report-problem.js': canonical }), platform).status, 'not loaded');
+  assert.equal(check(app({ 'manifest.json': '{"manifest_version":3}', 'report-problem.js': canonical, 'x.html': page }), platform).status, 'ok');
+  process.chdir(app({ 'manifest.json': '{"manifest_version":3}', 'report-problem.js': canonical, 'x.html': page }));
   assert.equal(check('.', platform).status, 'ok'); // relative root, as CI passes it
 });
