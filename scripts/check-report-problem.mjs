@@ -1,7 +1,7 @@
 // Reports whether an app repo carries the report-problem module and loads it.
 // Usage: node check-report-problem.mjs --repo <app dir> --platform <release-platform dir> [--require]
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, basename } from 'node:path';
 
 const SKIP = new Set(['node_modules', '.git', 'dist', 'build']);
 
@@ -19,9 +19,9 @@ const version = (text) => Number(/@release-platform\/report-problem v(\d+)/.exec
 /** Returns { status, detail }; status is n/a, ok, missing, outdated, modified or not loaded. */
 export function check(repo, platform) {
   const files = walk(repo);
-  if (!files.some((f) => f.endsWith('manifest.json'))) return { status: 'n/a', detail: 'no manifest.json (not a Chrome extension)' };
+  if (!files.some((f) => basename(f) === 'manifest.json')) return { status: 'n/a', detail: 'no manifest.json (not a Chrome extension)' };
   const canonical = readFileSync(join(platform, 'modules/report-problem/report-problem.js'), 'utf8');
-  const copy = files.find((f) => f.endsWith('/report-problem.js'));
+  const copy = files.find((f) => basename(f) === 'report-problem.js');
   if (!copy) return { status: 'missing', detail: 'see modules/report-problem/README.md in release-platform' };
   const text = readFileSync(copy, 'utf8');
   if (version(text) < version(canonical)) return { status: 'outdated', detail: `v${version(text)}, current is v${version(canonical)}` };

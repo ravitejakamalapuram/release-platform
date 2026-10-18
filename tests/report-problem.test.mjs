@@ -25,4 +25,6 @@ test('statuses', () => {
   assert.equal(check(app({ 'manifest.json': '{}', 'report-problem.js': canonical + '//x', 'x.html': page }), platform).status, 'modified');
   assert.equal(check(app({ 'manifest.json': '{}', 'report-problem.js': canonical }), platform).status, 'not loaded');
   assert.equal(check(app({ 'manifest.json': '{}', 'report-problem.js': canonical, 'x.html': page }), platform).status, 'ok');
+  process.chdir(app({ 'manifest.json': '{}', 'report-problem.js': canonical, 'x.html': page }));
+  assert.equal(check('.', platform).status, 'ok'); // relative root, as CI passes it
 });
