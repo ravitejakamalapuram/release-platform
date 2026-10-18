@@ -5,7 +5,7 @@
  * Setup: see README.md next to this file in release-platform/modules/report-problem. */
 (function () {
   'use strict';
-  var KEY = 'rp_errors', MAX = 5, shown = false;
+  var KEY = 'rp_errors', MAX = 5, shown = false, memory = [];
   var cfg = {
     repo: '', label: 'crash', version: '',
     strings: { message: 'Something went wrong.', report: 'Report a problem', dismiss: 'Dismiss' }
@@ -13,8 +13,11 @@
   var tag = document.currentScript;
   if (tag) { cfg.repo = tag.getAttribute('data-repo') || ''; cfg.label = tag.getAttribute('data-label') || cfg.label; }
 
-  function read() { try { return JSON.parse(localStorage.getItem(KEY)) || []; } catch (e) { return []; } }
-  function write(list) { try { localStorage.setItem(KEY, JSON.stringify(list.slice(-MAX))); } catch (e) { /* storage blocked: still show the prompt */ } }
+  function read() { try { return JSON.parse(localStorage.getItem(KEY)) || memory; } catch (e) { return memory; } }
+  function write(list) {
+    memory = list.slice(-MAX); // fallback copy for this page if storage is blocked or full
+    try { localStorage.setItem(KEY, JSON.stringify(memory)); } catch (e) { /* keep the in-memory copy */ }
+  }
   function clean(s) { return String(s || '').replace(/(chrome|moz)-extension:\/\/[^/]+\//g, ''); }
   function version() {
     if (cfg.version) return cfg.version;
@@ -43,7 +46,7 @@
   function issueUrl() {
     var errs = read(), body = [
       '**Version:** ' + version(), '**Browser:** ' + navigator.userAgent, '',
-      '**Errors** (kept on this device; nothing was sent until you submit this):', '```',
+      '**Errors** (kept on your device until you opened this draft; opening it sends them to GitHub, and nothing is posted until you submit):', '```',
       errs.map(function (x) { return x.at + '  ' + x.msg + '  ' + x.where + (x.stack ? '\n' + x.stack : ''); }).join('\n\n') || 'none recorded',
       '```', '', '**What were you doing?** (optional)', ''
     ].join('\n');
