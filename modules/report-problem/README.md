@@ -12,8 +12,7 @@ opens for them to read and send. The daily crash-fix routine reads those issues.
 3. Add a "Report a problem" link in settings that calls `ReportProblem.open()`.
 
 Optional: `ReportProblem.configure({ strings: { message, report, dismiss } })` to translate the prompt.
-Add one sentence to your privacy policy: errors are stored on the device and only shared if the user
-chooses to report them (the extension itself makes no network request).
+Add to your privacy policy: errors are stored on the device (localStorage); opening "Report a problem" sends the pre-filled error text to GitHub in the page address, and nothing is posted until the user submits the issue.
 
 ## CI
 
