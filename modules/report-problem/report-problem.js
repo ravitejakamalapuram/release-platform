@@ -5,7 +5,7 @@
  * Setup: see README.md next to this file in release-platform/modules/report-problem. */
 (function () {
   'use strict';
-  var KEY = 'rp_errors', MAX = 5, shown = false, memory = [];
+  var KEY = 'rp_errors', MAX = 5, shown = false, memory = [], broken = false;
   var cfg = {
     repo: '', label: 'crash', version: '',
     strings: { message: 'Something went wrong.', report: 'Report a problem', dismiss: 'Dismiss' }
@@ -13,10 +13,10 @@
   var tag = document.currentScript;
   if (tag) { cfg.repo = tag.getAttribute('data-repo') || ''; cfg.label = tag.getAttribute('data-label') || cfg.label; }
 
-  function read() { try { return JSON.parse(localStorage.getItem(KEY)) || memory; } catch (e) { return memory; } }
+  function read() { if (broken) return memory; try { return JSON.parse(localStorage.getItem(KEY)) || memory; } catch (e) { return memory; } }
   function write(list) {
     memory = list.slice(-MAX); // fallback copy for this page if storage is blocked or full
-    try { localStorage.setItem(KEY, JSON.stringify(memory)); } catch (e) { /* keep the in-memory copy */ }
+    try { localStorage.setItem(KEY, JSON.stringify(memory)); } catch (e) { broken = true; /* storage is unusable: read the in-memory copy from now on */ }
   }
   function clean(s) { return String(s || '').replace(/(chrome|moz)-extension:\/\/[^/]+\//g, ''); }
   function version() {
