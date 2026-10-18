@@ -500,6 +500,28 @@ summary and is force-pushed as the only file of the orphan **`status` branch**:
 [STATUS.md](../../blob/status/STATUS.md). One broken item shows a warning in its row instead of
 failing the run.
 
+## Crash issues
+
+[`crash-issues.yml`](.github/workflows/crash-issues.yml) files one GitHub issue per new Crashlytics
+crash (fatal and ANR, last 7 days, not closed) in the **calling** app repo, labelled `crash`, with
+counts, first/last seen versions, device/OS/app version of the latest sample, the stack trace and
+the last log lines. The issue loop (or a person) then fixes them. Dedupe is by the Crashlytics issue
+id in a hidden marker in each issue body, open or closed, so reruns never duplicate; at most 5 are
+filed per run. User, installation, session and event ids and custom keys are never copied.
+
+Per app: copy [`templates/crash-issues-caller.yml`](templates/crash-issues-caller.yml) to
+`.github/workflows/crash-issues.yml` and set `firebase_project` and `firebase_app_id`. Run it once
+by hand (dry run is the default) and read the log.
+
+One-time setup, owner only:
+
+1. In each app's Firebase project, grant `release-bot@rk-release-platform.iam.gserviceaccount.com`
+   the **Firebase Crashlytics Viewer** role (IAM and Admin, Grant access).
+2. Once, in project `rk-release-platform`, enable the **Firebase Crashlytics API**
+   (`firebasecrashlytics.googleapis.com`), which the calls are billed against.
+
+Keyless like the stores: the job authenticates through GitHub OIDC and runs platform scripts only.
+
 ## release.yaml reference
 
 Top level: `app` (slug, required), `test` (optional command), `e2e` (optional command, see
@@ -612,8 +634,8 @@ yq -o=json . examples/chrome-only.release.yaml > /tmp/r.json && node scripts/val
 Layout:
 
 ```
-.github/workflows/  release.yml promote.yml status.yml app-ci.yml store-screenshots.yml (reusable) · dashboard.yml ci.yml move-major-tag.yml (this repo)
-scripts/            cws.mjs play.mjs version.mjs validate.mjs package-chrome.mjs changelog.mjs status.mjs summary.mjs
+.github/workflows/  release.yml promote.yml status.yml app-ci.yml store-screenshots.yml crash-issues.yml (reusable) · dashboard.yml ci.yml move-major-tag.yml (this repo)
+scripts/            crash-issues.mjs cws.mjs play.mjs version.mjs validate.mjs package-chrome.mjs changelog.mjs status.mjs summary.mjs
 scripts/lib/        http.mjs (Google API client) gha.mjs (runner helpers) schema.mjs (tiny JSON Schema validator)
 schema/             release.schema.json
 templates/          caller workflows to copy into app repos

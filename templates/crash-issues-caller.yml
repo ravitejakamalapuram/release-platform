@@ -1,0 +1,28 @@
+# Copy to .github/workflows/crash-issues.yml in an app repo that uses Firebase Crashlytics.
+# One-time per Firebase project: give release-bot@rk-release-platform.iam.gserviceaccount.com the
+# "Firebase Crashlytics Viewer" role (see README, "Crash issues").
+name: crash-issues
+
+on:
+  schedule:
+    - cron: '23 2 * * *' # daily; pick a minute that is not :00
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Print the issues instead of filing them'
+        type: boolean
+        default: true
+
+permissions: {}
+
+jobs:
+  crash-issues:
+    permissions:
+      contents: read
+      issues: write
+      id-token: write
+    uses: ravitejakamalapuram/release-platform/.github/workflows/crash-issues.yml@v2
+    with:
+      firebase_project: YOUR-FIREBASE-PROJECT-ID
+      firebase_app_id: 1:000000000000:android:0000000000000000
+      dry_run: ${{ inputs.dry_run == true }}
