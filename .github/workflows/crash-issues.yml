@@ -36,6 +36,10 @@ on:
         description: 'Most issues to file per run'
         type: number
         default: 5
+      include_logs:
+        description: 'Copy the last app log lines (Crashlytics.log messages) into the issue. Off by default: they can hold personal data and the app repo may be public.'
+        type: boolean
+        default: false
       platform_ref:
         description: 'Advanced: release-platform ref for the helper script. Default: the ref this workflow was called at.'
         type: string
@@ -121,4 +125,5 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
           WINDOW_DAYS: ${{ inputs.window_days }}
           MAX_NEW: ${{ inputs.max_new }}
+          INCLUDE_LOGS: ${{ inputs.include_logs && '1' || '' }}
         run: node platform/scripts/crash-issues.mjs

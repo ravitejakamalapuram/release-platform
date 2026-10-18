@@ -508,8 +508,8 @@ source would need its own workflow.
 
 [`crash-issues.yml`](.github/workflows/crash-issues.yml) files one GitHub issue per new Crashlytics
 crash (fatal and ANR, last 7 days, not closed) in the **calling** app repo, labelled `crash`, with
-counts, first/last seen versions, device/OS/app version of the latest sample, the stack trace and
-the last log lines. The issue loop (or a person) then fixes them. Dedupe is by the Crashlytics issue
+counts, first/last seen versions, device/OS/app version of the latest sample, the stack trace (and the
+last log lines only if `include_logs: true`, since app logs can hold personal data). The issue loop (or a person) then fixes them. Dedupe is by the Crashlytics issue
 id in a hidden marker in each issue body, open or closed, so reruns never duplicate; at most 5 are
 filed per run. User, installation, session and event ids and custom keys are never copied.
 

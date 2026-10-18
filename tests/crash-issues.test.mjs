@@ -24,6 +24,12 @@ const opts = (fetchImpl, extra = {}) => ({
   token: 't', project: 'p', appId: '1:2:android:3', ghToken: 'g', repo: 'o/r', fetchImpl, now: new Date('2026-10-18T00:00:00Z'), ...extra,
 });
 
+test('log lines are left out unless include_logs is set', () => {
+  const ev = { logs: [{ message: 'user a@b.com tapped pay' }], exceptions: [] };
+  assert.doesNotMatch(buildBody(group('x'), ev), /a@b\.com/);
+  assert.match(buildBody(group('x'), ev, { includeLogs: true }), /a@b\.com/);
+});
+
 test('files only crashes not already filed, skips closed, caps at max', async () => {
   const f = fakeFetch([
     { body: { groups: [group('old1'), group('new1'), group('closed1', 'CLOSED'), group('new2')] } },

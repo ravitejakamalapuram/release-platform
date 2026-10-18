@@ -24,7 +24,7 @@ export function issueTitle(issue) {
   return `[crash ${issue.id.slice(0, 8)}] ${issue.title ?? 'Crash'}${sub}`.slice(0, 200);
 }
 
-export function buildBody(group, event) {
+export function buildBody(group, event, { includeLogs = false } = {}) {
   const i = group.issue;
   const lines = [`<!-- ${MARK}:${i.id} -->`];
   lines.push(`**Crashlytics issue** \`${i.id}\` · ${i.errorType ?? 'FATAL'} · state ${i.state ?? 'unknown'}${i.uri ? ` · [Console](${i.uri})` : ''}`, '');
@@ -43,7 +43,7 @@ export function buildBody(group, event) {
       lines.push('```', ...(t.frames ?? []).slice(0, 60).map(frameLine), '```');
     }
     if (event.blameFrame) lines.push(`Blamed frame: \`${frameLine(event.blameFrame).trim()}\``);
-    const logs = (event.logs ?? []).slice(-30).map((l) => l.message ?? JSON.stringify(l));
+    const logs = includeLogs ? (event.logs ?? []).slice(-30).map((l) => l.message).filter(Boolean) : [];
     if (logs.length) lines.push('<details><summary>Last log lines</summary>', '', '```', ...logs, '```', '</details>');
   } else {
     lines.push('', '_No sample event could be fetched; open the Console link._');
@@ -59,7 +59,7 @@ async function getJson(fetchImpl, url, headers) {
   return JSON.parse(text);
 }
 
-export async function run({ token, project, appId, ghToken, repo, dry = false, windowDays = 7, max = 5, fetchImpl = fetch, now = new Date() }) {
+export async function run({ token, project, appId, ghToken, repo, dry = false, windowDays = 7, max = 5, includeLogs = false, fetchImpl = fetch, now = new Date() }) {
   const api = `https://firebasecrashlytics.googleapis.com/v1alpha/projects/${project}/apps/${appId}`;
   const gHead = { authorization: `Bearer ${ghToken}`, accept: 'application/vnd.github+json', 'content-type': 'application/json' };
   const cHead = { authorization: `Bearer ${token}` };
@@ -73,7 +73,7 @@ export async function run({ token, project, appId, ghToken, repo, dry = false, w
   const groups = (report.groups ?? []).filter((g) => g.issue?.id && g.issue.state !== 'CLOSED');
 
   const known = new Set();
-  for (let page = 1; page < 20; page++) {
+  for (let page = 1; ; page++) {
     const rows = await getJson(fetchImpl, `https://api.github.com/repos/${repo}/issues?${q([['labels', LABEL], ['state', 'all'], ['per_page', '100'], ['page', String(page)]])}`, gHead);
     for (const r of rows) for (const m of (r.body ?? '').matchAll(new RegExp(`<!-- ${MARK}:(\\S+) -->`, 'g'))) known.add(m[1]);
     if (rows.length < 100) break;
@@ -88,10 +88,11 @@ export async function run({ token, project, appId, ghToken, repo, dry = false, w
       event = (await getJson(fetchImpl, `${api}/events?${q([['filter.issue.id', g.issue.id], ['pageSize', '1']])}`, cHead)).events?.[0] ?? null;
     } catch (e) { warning(`sample event unavailable for ${g.issue.id}: ${e.message}`); }
     const title = issueTitle(g.issue);
-    const body = buildBody(g, event);
+    let body = buildBody(g, event, { includeLogs });
+    if (body.length > 60000) body = `${body.slice(0, 60000)}\n\n_…truncated; see the Console link._`;
     if (dry) { log(`--- would file: ${title}\n${body}\n`); filed.push({ title }); continue; }
     const res = await fetchImpl(`https://api.github.com/repos/${repo}/issues`, { method: 'POST', headers: gHead, body: JSON.stringify({ title, body, labels: [LABEL] }) });
-    if (!res.ok) throw new Error(`creating issue failed (${res.status})`);
+    if (!res.ok) throw new Error(`creating issue failed (${res.status}): ${(await res.text()).slice(0, 300)}`);
     const made = JSON.parse(await res.text());
     notice(`filed #${made.number} for ${g.issue.id}`);
     filed.push({ title, number: made.number });
@@ -106,7 +107,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
     await run({
       token: need('GOOGLE_ACCESS_TOKEN'), project: need('FIREBASE_PROJECT'), appId: need('FIREBASE_APP_ID'),
       ghToken: need('GITHUB_TOKEN'), repo: need('GITHUB_REPOSITORY'), dry: process.env.DRY_RUN === '1',
-      windowDays: Number(process.env.WINDOW_DAYS || 7), max: Number(process.env.MAX_NEW || 5),
+      windowDays: Number(process.env.WINDOW_DAYS || 7), max: Number(process.env.MAX_NEW || 5), includeLogs: process.env.INCLUDE_LOGS === '1',
     });
   });
 }
