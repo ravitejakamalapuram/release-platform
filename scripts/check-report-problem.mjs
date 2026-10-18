@@ -40,5 +40,5 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   if (process.env.GITHUB_STEP_SUMMARY && existsSync(process.env.GITHUB_STEP_SUMMARY)) {
     (await import('node:fs')).appendFileSync(process.env.GITHUB_STEP_SUMMARY, `- ${line}\n`);
   }
-  if (bad && process.argv.includes('--require')) process.exit(1);
+  if (bad && (process.argv.includes('--require') || process.env.REQUIRE_REPORT_PROBLEM === 'true')) process.exit(1);
 }

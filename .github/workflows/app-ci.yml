@@ -107,8 +107,9 @@ jobs:
 
       - name: Report-a-problem module
         env:
-          REQUIRE: ${{ inputs.require_report_problem && '--require' || '' }}
-        run: node platform/scripts/check-report-problem.mjs --repo "app/${{ inputs.directory }}" --platform platform $REQUIRE
+          REQUIRE_REPORT_PROBLEM: ${{ inputs.require_report_problem }}
+          DIRECTORY: ${{ inputs.directory }}
+        run: node platform/scripts/check-report-problem.mjs --repo "app/$DIRECTORY" --platform platform
 
       # Targets with `listing:`: store rules (text limits, image sizes/counts) checked on every PR.
       - name: Validate store listings
