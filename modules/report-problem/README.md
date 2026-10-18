@@ -17,8 +17,8 @@ Add to your privacy policy: errors are stored on the device (localStorage); open
 ## CI
 
 `app-ci.yml` runs `scripts/check-report-problem.mjs` and writes `ok`, `outdated`, `modified`,
-`not loaded` or `missing` to the job summary. It only warns by default; pass `require_report_problem: true`
-to the workflow to make anything other than `ok` fail the check.
+`not loaded`, `missing` or `n/a` (not a Chrome extension, so nothing to check) to the job summary. It only warns by default; pass `require_report_problem: true`
+to the workflow to make anything other than `ok` or `n/a` fail the check.
 
 ## Updating
 

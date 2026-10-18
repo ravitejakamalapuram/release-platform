@@ -17,7 +17,7 @@
     if (broken) return memory;
     try {
       var list = JSON.parse(localStorage.getItem(KEY));
-      return Array.isArray(list) ? list.filter(function (x) { return x && typeof x === 'object'; }) : memory;
+      return Array.isArray(list) ? list.filter(function (x) { return x && typeof x === 'object'; }).slice(-MAX) : memory;
     } catch (e) { return memory; }
   }
   function write(list) {
