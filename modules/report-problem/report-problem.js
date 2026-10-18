@@ -13,7 +13,13 @@
   var tag = document.currentScript;
   if (tag) { cfg.repo = tag.getAttribute('data-repo') || ''; cfg.label = tag.getAttribute('data-label') || cfg.label; }
 
-  function read() { if (broken) return memory; try { return JSON.parse(localStorage.getItem(KEY)) || memory; } catch (e) { return memory; } }
+  function read() {
+    if (broken) return memory;
+    try {
+      var list = JSON.parse(localStorage.getItem(KEY));
+      return Array.isArray(list) ? list.filter(function (x) { return x && typeof x === 'object'; }) : memory;
+    } catch (e) { return memory; }
+  }
   function write(list) {
     memory = list.slice(-MAX); // fallback copy for this page if storage is blocked or full
     try { localStorage.setItem(KEY, JSON.stringify(memory)); } catch (e) { broken = true; /* storage is unusable: read the in-memory copy from now on */ }
