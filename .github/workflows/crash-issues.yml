@@ -1,4 +1,7 @@
-# Reusable: files one GitHub issue (label `crash`) per new Crashlytics crash in the CALLING repo,
+# Reusable, CRASHLYTICS ONLY (Android / iOS / Flutter apps that report to Firebase Crashlytics).
+# Chrome extensions and other apps without Crashlytics are not supported: they have no crash source here.
+#
+# Files one GitHub issue (label `crash`) per new Crashlytics crash in the CALLING repo,
 # with counts, versions, device/OS and the stack trace, so the issue loop can fix it.
 #
 # Callers (see templates/crash-issues-caller.yml) need:
@@ -54,7 +57,7 @@ defaults:
 
 jobs:
   crash-issues:
-    name: File crash issues
+    name: File crash issues (Crashlytics)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -62,6 +65,15 @@ jobs:
       issues: write
       id-token: write
     steps:
+      - name: Check this is a Crashlytics mobile app
+        env:
+          APP_ID: ${{ inputs.firebase_app_id }}
+        run: |
+          if ! [[ "$APP_ID" =~ ^[0-9]+:[0-9]+:(android|ios):[0-9a-f]+$ ]]; then
+            echo "::error::crash-issues reads Firebase Crashlytics, which only exists for Android and iOS apps (app id like 1:123:android:abc). Chrome extensions and other apps are not supported."
+            exit 1
+          fi
+
       - name: Resolve release-platform ref
         id: platform
         env:

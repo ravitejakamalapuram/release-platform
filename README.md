@@ -502,6 +502,10 @@ failing the run.
 
 ## Crash issues
 
+**Crashlytics only: Android, iOS and Flutter apps.** Chrome extensions and other apps without
+Firebase Crashlytics are not supported (the job fails fast on a non-mobile app id); another crash
+source would need its own workflow.
+
 [`crash-issues.yml`](.github/workflows/crash-issues.yml) files one GitHub issue per new Crashlytics
 crash (fatal and ANR, last 7 days, not closed) in the **calling** app repo, labelled `crash`, with
 counts, first/last seen versions, device/OS/app version of the latest sample, the stack trace and
