@@ -34,7 +34,7 @@ on:
         type: string
         default: production
       expect_in_progress_version_codes:
-        description: 'Comma-separated version codes the caller counted a soak for. When set, the action runs only if Play holds exactly these as the in-progress release on to_track (read-only check before any write).'
+        description: 'Comma-separated version codes the caller counted a soak for. Only for rollout and complete, which act on the in-progress release of to_track: they run only if Play holds exactly these there (read-only check before any write). Other actions fail when it is set.'
         type: string
         default: ''
       platform_ref:
@@ -155,9 +155,16 @@ jobs:
         env:
           GOOGLE_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
           PACKAGE: ${{ needs.config.outputs.package }}
+          ACTION: ${{ inputs.action }}
           TO: ${{ inputs.to_track }}
           EXPECTED: ${{ inputs.expect_in_progress_version_codes }}
-        run: node platform/scripts/play.mjs confirm-in-progress --package "$PACKAGE" --track "$TO" --version-codes "$EXPECTED"
+        run: |
+          # promote copies the newest release of from_track, so the codes confirmed on to_track would not
+          # bind what it writes. Only rollout and complete act on the release this check reads.
+          case "$ACTION" in rollout|complete) ;; *)
+            echo "::error::expect_in_progress_version_codes is only valid for rollout and complete (got '$ACTION')"; exit 1 ;;
+          esac
+          node platform/scripts/play.mjs confirm-in-progress --package "$PACKAGE" --track "$TO" --version-codes "$EXPECTED"
 
       - name: ${{ inputs.action }}
         id: play
