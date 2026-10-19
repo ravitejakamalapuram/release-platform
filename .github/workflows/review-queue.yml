@@ -39,6 +39,6 @@ jobs:
       - name: Request the next review
         env:
           REVIEW_QUEUE_TOKEN: ${{ secrets.REVIEW_QUEUE_TOKEN }}
-          REVIEW_QUEUE_REPOS: ${{ vars.REVIEW_QUEUE_REPOS || 'ravitejakamalapuram/TeluguPanchangam,ravitejakamalapuram/release-platform' }}
+          REVIEW_QUEUE_REPOS: ${{ vars.REVIEW_QUEUE_REPOS || 'ravitejakamalapuram/TeluguPanchangam,ravitejakamalapuram/release-platform,ravitejakamalapuram/InvTrack,ravitejakamalapuram/session-transfer,ravitejakamalapuram/cors-enabler,ravitejakamalapuram/json-workbench' }}
           DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
         run: node scripts/review-queue.mjs

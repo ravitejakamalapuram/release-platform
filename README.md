@@ -504,7 +504,7 @@ failing the run.
 
 CodeRabbit reviews about one PR per hour on these repos and only when asked, so PRs used to fight over the slot.
 [`review-queue.yml`](.github/workflows/review-queue.yml) runs at :17 every hour and is the only thing that posts
-`@coderabbitai review`: it picks the first PR in the line across `TeluguPanchangam` and `release-platform`
+`@coderabbitai review`: it picks the first PR in the line across `TeluguPanchangam`, `release-platform`, `InvTrack`, `session-transfer`, `cors-enabler` and `json-workbench`
 (open, not draft, no CodeRabbit review at its latest commit) and asks for one review. PRs and agents just open the PR and wait.
 
 - **Priority:** label `review:urgent` to go first, `review:low` to go last; no label sits between. Same priority: earliest opened first.
@@ -513,7 +513,7 @@ CodeRabbit reviews about one PR per hour on these repos and only when asked, so 
 - **Dry run:** run the workflow by hand with `dry_run` on, or `DRY_RUN=1 node scripts/review-queue.mjs`.
 
 One-time setup, owner only: create a fine-grained personal access token (CodeRabbit ignores commands from bots) with
-repository access to `TeluguPanchangam` and `release-platform`, permissions **Pull requests: Read and write** and **Commit statuses: Read**,
+repository access to those six repos, permissions **Pull requests: Read and write** and **Commit statuses: Read**,
 and save it as the repository secret `REVIEW_QUEUE_TOKEN` in this repo. To change the repos set the variable `REVIEW_QUEUE_REPOS` (comma-separated `owner/repo`).
 
 ## Crash issues
