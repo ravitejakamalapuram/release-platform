@@ -11,6 +11,7 @@
 //   GOOGLE_ACCESS_TOKEN=... node scripts/play.mjs preflight --package com.x --version-code 1002003   (read-only)
 //   GOOGLE_ACCESS_TOKEN=... node scripts/play.mjs listing  --package com.x --bundle listings/android-0 [--dry-run]
 //   GOOGLE_ACCESS_TOKEN=... node scripts/play.mjs verify-listing --package com.x --bundle listings/android-0   (read-only; exit 1 on mismatch)
+//   GOOGLE_ACCESS_TOKEN=... node scripts/play.mjs confirm-in-progress --package com.x --track production --version-codes 1002003   (read-only; exit 1 unless Play holds that in-progress release)
 //   GOOGLE_ACCESS_TOKEN=... node scripts/play.mjs verify-track --package com.x --track production --version-codes 1002003 --status inProgress --fraction 0.2 [--out verify.json]   (read-only; exit 1 on mismatch)
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -388,6 +389,30 @@ export async function verifyTrack({ pkg, token, fetchImpl, track, versionCodes, 
   return { ok: false, mismatches, reads: attempts };
 }
 
+/**
+ * Read-only check that Play holds exactly these version codes as an in-progress (staged) release on
+ * [track], whatever the fraction. A promotion that counts a soak from a recorded rollout start uses
+ * it to confirm that the record still describes what Play serves. Returns one line per difference.
+ */
+export function diffInProgress({ track, versionCodes }, tracks) {
+  const want = [...versionCodes].map(String).sort();
+  const t = (tracks ?? []).find((x) => x.track === track);
+  const seen = t ? describeTracks([t])[0] ?? `${track}: (no releases)` : `${track}: (track not found)`;
+  const rel = (t?.releases ?? []).find((r) => r.status === 'inProgress');
+  if (!rel) return [`${track}: no in-progress release (Play has ${seen})`];
+  const have = (rel.versionCodes ?? []).map(String).sort();
+  if (have.length !== want.length || !have.every((c, i) => c === want[i])) {
+    return [`${track}: the in-progress release is [${have.join(', ')}], expected [${want.join(', ')}] (Play has ${seen})`];
+  }
+  return [];
+}
+
+export async function confirmInProgress({ pkg, token, fetchImpl, track, versionCodes }) {
+  if (!track || !versionCodes?.length) throw new Error('confirmInProgress needs track and versionCodes');
+  const mismatches = diffInProgress({ track, versionCodes }, await listTracks({ pkg, token, fetchImpl }));
+  return { ok: mismatches.length === 0, mismatches };
+}
+
 export function describeTracks(tracks) {
   return tracks
     .filter((t) => (t.releases ?? []).length)
@@ -515,13 +540,25 @@ async function cli() {
       out = `RELEASE_VERIFIED: ${pkg} ${what} (read back from Play)`;
       break;
     }
+    case 'confirm-in-progress': {
+      if (!values.track || !values['version-codes']) throw new Error('--track and --version-codes are required');
+      const versionCodes = values['version-codes'].split(',').map((c) => c.trim()).filter(Boolean);
+      const { ok, mismatches } = await confirmInProgress({ pkg, token, track: values.track, versionCodes });
+      if (!ok) {
+        for (const m of mismatches) log(`  ${m}`);
+        setOutput('result', `ROLLOUT_NOT_CONFIRMED: ${pkg} ${values.track} [${versionCodes.join(', ')}]`);
+        throw new StoreError(`ROLLOUT_NOT_CONFIRMED: ${pkg} - Play does not hold [${versionCodes.join(', ')}] as the in-progress ${values.track} release (differences above).`);
+      }
+      out = `ROLLOUT_CONFIRMED: ${pkg} ${values.track} [${versionCodes.join(', ')}] is in progress on Play (read-only check)`;
+      break;
+    }
     case 'tracks': {
       const lines = describeTracks(await listTracks({ pkg, token }));
       out = lines.length ? lines.join('\n') : '(no releases on any track)';
       break;
     }
     default:
-      throw new Error(`Unknown command "${command}" (expected upload|preflight|promote|rollout|halt|complete|tracks|listing|verify-listing|verify-track)`);
+      throw new Error(`Unknown command "${command}" (expected upload|preflight|promote|rollout|halt|complete|tracks|listing|verify-listing|verify-track|confirm-in-progress)`);
   }
   log(out);
   setOutput('result', out.split('\n')[0]);
