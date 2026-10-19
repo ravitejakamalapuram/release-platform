@@ -500,6 +500,23 @@ summary and is force-pushed as the only file of the orphan **`status` branch**:
 [STATUS.md](../../blob/status/STATUS.md). One broken item shows a warning in its row instead of
 failing the run.
 
+## CodeRabbit review queue
+
+CodeRabbit reviews about one PR per hour on these repos and only when asked, so PRs used to fight over the slot.
+[`review-queue.yml`](.github/workflows/review-queue.yml) runs every 15 minutes (at :02, :17, :32, :47 UTC) and is the only thing that posts
+`@coderabbitai review`: it picks the first PR in the line across `TeluguPanchangam`, `release-platform`, `InvTrack`, `session-transfer`, `cors-enabler` and `json-workbench`
+(open, not draft, no CodeRabbit review at its latest commit) and asks for one review. PRs and agents just open the PR and wait.
+
+- **Priority:** label `review:urgent` to go first, `review:low` to go last; no label sits between. Same priority: earliest opened first.
+- **Position and time:** each queued PR gets one comment (edited in place) with its position and the expected review time in IST; the run summary shows the whole line.
+- **No wasted slots:** nothing is posted while a review runs, within 55 minutes of the last command (ours or a person's), or during a CodeRabbit rate limit. A PR that got 3 commands for one commit with no review is parked until it gets a new commit.
+- **Ready to merge:** a PR whose latest CodeRabbit review says 0 actionable comments, with all CI checks green, gets the label `ready-to-merge` (removed again if that stops being true, e.g. after a push). The job never merges; it is checked every 15 minutes, so the label can lag by up to that.
+- **Dry run:** run the workflow by hand with `dry_run` on, or `DRY_RUN=1 node scripts/review-queue.mjs`.
+
+One-time setup, owner only: create a fine-grained personal access token (CodeRabbit ignores commands from bots) with
+repository access to those six repos, permissions **Pull requests: Read and write** and **Commit statuses: Read** and **Checks: Read**,
+and save it as the repository secret `REVIEW_QUEUE_TOKEN` in this repo. To change the repos set the variable `REVIEW_QUEUE_REPOS` (comma-separated `owner/repo`).
+
 ## Crash issues
 
 **Crashlytics only: Android, iOS and Flutter apps.** Chrome extensions and other apps without
@@ -638,8 +655,8 @@ yq -o=json . examples/chrome-only.release.yaml > /tmp/r.json && node scripts/val
 Layout:
 
 ```
-.github/workflows/  release.yml promote.yml status.yml app-ci.yml store-screenshots.yml crash-issues.yml (reusable) · dashboard.yml ci.yml move-major-tag.yml (this repo)
-scripts/            crash-issues.mjs cws.mjs play.mjs version.mjs validate.mjs package-chrome.mjs changelog.mjs status.mjs summary.mjs
+.github/workflows/  release.yml promote.yml status.yml app-ci.yml store-screenshots.yml crash-issues.yml (reusable) · review-queue.yml · dashboard.yml ci.yml move-major-tag.yml (this repo)
+scripts/            review-queue.mjs crash-issues.mjs cws.mjs play.mjs version.mjs validate.mjs package-chrome.mjs changelog.mjs status.mjs summary.mjs
 scripts/lib/        http.mjs (Google API client) gha.mjs (runner helpers) schema.mjs (tiny JSON Schema validator)
 schema/             release.schema.json
 templates/          caller workflows to copy into app repos
