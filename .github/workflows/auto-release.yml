@@ -1,7 +1,7 @@
 # Reusable AUTOMATIC release policy: gate -> release -> (Play) promote.
 #
 # Callers (see templates/auto-release-caller.yml) trigger it on push to main and need:
-#   permissions: { contents: write, id-token: write }
+#   permissions: { contents: write, id-token: write, deployments: write }
 #   secrets: inherit
 #
 # What it does
@@ -135,6 +135,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      deployments: write   # rollout-start record (scripts/rollout-record.mjs)
     uses: ravitejakamalapuram/release-platform/.github/workflows/promote.yml@v2
     with:
       action: promote

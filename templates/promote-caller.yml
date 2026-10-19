@@ -27,6 +27,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      deployments: write   # records the staged rollout start
     uses: ravitejakamalapuram/release-platform/.github/workflows/promote.yml@v2
     with:
       action: ${{ inputs.action }}
