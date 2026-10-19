@@ -23,6 +23,7 @@ jobs:
     permissions:
       contents: write
       id-token: write
+      deployments: write   # records the staged rollout start
     uses: ravitejakamalapuram/release-platform/.github/workflows/auto-release.yml@v2
     with:
       trigger: ${{ github.event_name }}

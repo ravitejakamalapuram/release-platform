@@ -33,6 +33,10 @@ on:
         description: 'GitHub environment to run in (protect it with required reviewers).'
         type: string
         default: production
+      expect_in_progress_version_codes:
+        description: 'Comma-separated version codes the caller counted a soak for. Only for rollout and complete, which act on the in-progress release of to_track: they run only if Play holds exactly these there (read-only check before any write). Other actions fail when it is set.'
+        type: string
+        default: ''
       platform_ref:
         description: 'Advanced: release-platform ref for the helper scripts. Default: the ref this workflow was called at.'
         type: string
@@ -104,6 +108,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      deployments: write   # the rollout-start record (scripts/rollout-record.mjs)
     steps:
       - name: Resolve release-platform ref
         id: platform
@@ -142,6 +147,24 @@ jobs:
           token_format: access_token
           access_token_scopes: https://www.googleapis.com/auth/androidpublisher
           create_credentials_file: false
+
+      # The caller counted a soak for these version codes (InvTrack #849). Play must still hold them
+      # as the in-progress release, or nothing is changed. Read-only; runs before any write.
+      - name: Confirm the soaked rollout on Play
+        if: ${{ inputs.expect_in_progress_version_codes != '' }}
+        env:
+          GOOGLE_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          PACKAGE: ${{ needs.config.outputs.package }}
+          ACTION: ${{ inputs.action }}
+          TO: ${{ inputs.to_track }}
+          EXPECTED: ${{ inputs.expect_in_progress_version_codes }}
+        run: |
+          # promote copies the newest release of from_track, so the codes confirmed on to_track would not
+          # bind what it writes. Only rollout and complete act on the release this check reads.
+          case "$ACTION" in rollout|complete) ;; *)
+            echo "::error::expect_in_progress_version_codes is only valid for rollout and complete (got '$ACTION')"; exit 1 ;;
+          esac
+          node platform/scripts/play.mjs confirm-in-progress --package "$PACKAGE" --track "$TO" --version-codes "$EXPECTED"
 
       - name: ${{ inputs.action }}
         id: play
@@ -183,6 +206,23 @@ jobs:
           args=(verify-track --package "$PACKAGE" --track "$TO" --version-codes "$VERSION_CODES" --status "$status")
           if [ -n "$FRACTION" ]; then args+=(--fraction "$FRACTION"); fi
           node platform/scripts/play.mjs "${args[@]}"
+
+      # A staged production rollout that Play confirmed has a start time. A later promotion reads
+      # this record for its 48 h soak. A failed record does not undo the rollout; with no record
+      # the caller's guard refuses to widen it.
+      - name: Record the rollout start
+        if: ${{ steps.verify.outcome == 'success' && inputs.action == 'promote' }}
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PACKAGE: ${{ needs.config.outputs.package }}
+          TO: ${{ inputs.to_track }}
+          VERSION_CODES: ${{ steps.play.outputs.version_codes }}
+          FRACTION: ${{ steps.play.outputs.user_fraction }}
+        run: |
+          if [ -n "$FRACTION" ]; then status=inProgress; else status=completed; fi
+          node platform/scripts/rollout-record.mjs --package "$PACKAGE" --track "$TO" \
+            --version-codes "$VERSION_CODES" --status "$status" --fraction "$FRACTION"
 
       - name: Summary
         if: always()
