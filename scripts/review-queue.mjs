@@ -141,7 +141,7 @@ async function inspect(api, repo, pr, me) {
     const mark = new RegExp(`<!-- ${TRIGGER} sha=(\\w+) -->`).exec(c.body);
     if (mark && c.user?.login === me) triggers.push({ at, sha: mark[1] });
     else if (!mark && TRUSTED.has(c.author_association) && /^\s*@coderabbitai\s+(full\s+)?review\b/i.test(c.body) && c.user?.login !== BOT) triggers.push({ at, sha: null });
-    if (c.body.includes(`<!-- ${STATUS} -->`)) sticky = c;
+    if (c.user?.login === me && c.body.includes(`<!-- ${STATUS} -->`)) sticky = c;
     if (c.user?.login === BOT) limitUntil = Math.max(limitUntil, rateLimitWait(c.body) ? seen + rateLimitWait(c.body) : 0);
   }
   const reviewed = reviews.some((r) => r.user?.login === BOT && r.commit_id === sha) || (cr?.state === 'success' && /review completed/i.test(cr.description ?? ''));
