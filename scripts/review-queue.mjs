@@ -51,11 +51,14 @@ export function slots(count, { now, blockedUntil, canTrigger, tickMinute }) {
 
 const clock = (t, tz) => `${new Intl.DateTimeFormat('en-GB', { timeZone: tz, weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false }).format(t)} ${tz === 'Asia/Kolkata' ? 'IST' : tz}`;
 
-/** Wait CodeRabbit asked for in a rate-limit notice ("Please wait 12 minutes and 30 seconds"), in ms, or 0. */
+/** Wait CodeRabbit asks for ("Next included review available in 25 minutes", "Please wait 12 minutes and 30 seconds"), in ms, or 0. */
 export function rateLimitWait(body) {
-  if (!/rate limit/i.test(body)) return 0;
-  const m = /wait\s+(?:(\d+)\s*(?:hours?|hrs?)[, ]*(?:and\s+)?)?(?:(\d+)\s*minutes?)?[, ]*(?:and\s+)?(?:(\d+)\s*seconds?)?/i.exec(body);
-  return m ? ((Number(m[1] ?? 0) * 60 + Number(m[2] ?? 0)) * 60 + Number(m[3] ?? 0)) * 1000 : 0;
+  if (!/rate limit|review limit reached/i.test(body)) return 0;
+  const at = body.search(/(?:wait|available in)\s+\d/i);
+  if (at < 0) return 0;
+  const tail = body.slice(at, at + 80);
+  const n = (unit) => Number(new RegExp(`(\\d+)\\s*${unit}`, 'i').exec(tail)?.[1] ?? 0);
+  return ((n('hours?') * 60 + n('minutes?')) * 60 + n('seconds?')) * 1000;
 }
 
 export function statusBody(pr, { position, total, when, tz, state }) {
@@ -105,11 +108,12 @@ async function inspect(api, repo, pr) {
   let limitUntil = 0;
   for (const c of comments) {
     const at = Date.parse(c.created_at);
+    const seen = Date.parse(c.updated_at ?? c.created_at); // CodeRabbit edits its limit notice in place
     const mark = new RegExp(`<!-- ${TRIGGER} sha=(\\w+) -->`).exec(c.body);
     if (mark) triggers.push({ at, sha: mark[1] });
     else if (/^\s*@coderabbitai\s+(full\s+)?review\b/i.test(c.body) && c.user?.login !== BOT) triggers.push({ at, sha: null });
     if (c.body.includes(`<!-- ${STATUS} -->`)) sticky = c;
-    if (c.user?.login === BOT) limitUntil = Math.max(limitUntil, rateLimitWait(c.body) ? at + rateLimitWait(c.body) : 0);
+    if (c.user?.login === BOT) limitUntil = Math.max(limitUntil, rateLimitWait(c.body) ? seen + rateLimitWait(c.body) : 0);
   }
   const reviewed = reviews.some((r) => r.user?.login === BOT && r.commit_id === sha) || (cr?.state === 'success' && /review completed/i.test(cr.description ?? ''));
   let clean = false;
