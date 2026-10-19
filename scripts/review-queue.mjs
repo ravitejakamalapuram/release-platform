@@ -5,16 +5,18 @@
 //   2. orders them: label `review:urgent` first, no label next, `review:low` last, then oldest opened first,
 //   3. posts the review command on the first one, unless a review is running, a rate limit is active, or the last
 //      command (ours or a person's) was under 55 minutes ago,
-//   4. keeps one sticky comment per queued PR (position + expected time) and writes the whole line to the run summary.
+//   4. labels `ready-to-merge` on PRs whose latest CodeRabbit review has 0 actionable comments and whose CI is green
+//      (and removes it when that stops being true), so a person or thread only has to glance and merge,
+//   5. keeps one sticky comment per queued PR (position + expected time) and writes the whole line to the run summary.
 //
 //   REVIEW_QUEUE_TOKEN=... REVIEW_QUEUE_REPOS=owner/a,owner/b [DRY_RUN=1] node scripts/review-queue.mjs
 //
 // Needs a token of the repo owner (CodeRabbit ignores commands from bots): fine-grained, on the queued repos,
-// Pull requests read/write, Commit statuses read. No LLM, no app code runs.
+// Pull requests read/write, Commit statuses read, Checks read. No LLM, no app code runs.
 import { pathToFileURL } from 'node:url';
 import { log, main, notice, summary } from './lib/gha.mjs';
 
-export const LABELS = { urgent: 'review:urgent', low: 'review:low' };
+export const LABELS = { urgent: 'review:urgent', low: 'review:low', ready: 'ready-to-merge' };
 const BOT = 'coderabbitai[bot]';
 const TRIGGER = 'review-queue:trigger';
 const STATUS = 'review-queue:status';
@@ -109,14 +111,26 @@ async function inspect(api, repo, pr) {
     if (c.body.includes(`<!-- ${STATUS} -->`)) sticky = c;
     if (c.user?.login === BOT) limitUntil = Math.max(limitUntil, rateLimitWait(c.body) ? at + rateLimitWait(c.body) : 0);
   }
+  const reviewed = reviews.some((r) => r.user?.login === BOT && r.commit_id === sha) || (cr?.state === 'success' && /review completed/i.test(cr.description ?? ''));
+  let clean = false;
+  if (reviewed) {
+    const last = reviews.filter((r) => r.user?.login === BOT && r.commit_id === sha).pop();
+    const n = /Actionable comments posted:\s*(\d+)/i.exec(last?.body ?? '');
+    const checks = await api.call('GET', `/repos/${repo}/commits/${sha}/check-runs?per_page=100`);
+    const ok = (checks.check_runs ?? []).every((c) => c.status === 'completed' && ['success', 'skipped', 'neutral'].includes(c.conclusion));
+    const others = (status.statuses ?? []).filter((x) => x.context !== 'CodeRabbit').every((x) => x.state === 'success');
+    clean = n !== null && Number(n[1]) === 0 && ok && others;
+  }
   return {
     repo,
     number: pr.number,
+    labels: pr.labels.map((l) => l.name),
+    clean,
     title: pr.title,
     created: pr.created_at,
     sha,
     rank: priority(pr.labels.map((l) => l.name)),
-    reviewed: reviews.some((r) => r.user?.login === BOT && r.commit_id === sha) || (cr?.state === 'success' && /review completed/i.test(cr.description ?? '')),
+    reviewed,
     running: cr?.state === 'pending',
     attempts: triggers.filter((t) => t.sha && sha.startsWith(t.sha)).length,
     lastTrigger: Math.max(0, ...triggers.map((t) => t.at)),
@@ -157,11 +171,17 @@ export async function run({ token, repos, dry = false, tz = 'Asia/Kolkata', tick
   queue.forEach((p, i) => upsert(p, statusBody(p, { position: i + 1, total: queue.length, when: times[i], tz, state: i === 0 && canTrigger ? 'requested' : 'queued' })));
   parked.forEach((p) => upsert(p, statusBody(p, { state: 'parked' })));
   prs.filter((p) => p.reviewed && p.sticky && !p.sticky.body.includes('reviewed at the latest commit')).forEach((p) => upsert(p, statusBody(p, { state: 'done' })));
+  for (const p of prs) {
+    const has = p.labels.includes(LABELS.ready);
+    if (p.clean && !has) writes.push(dry ? null : api.call('POST', `/repos/${p.repo}/issues/${p.number}/labels`, { labels: [LABELS.ready] }));
+    if (!p.clean && has) writes.push(dry ? null : api.call('DELETE', `/repos/${p.repo}/issues/${p.number}/labels/${encodeURIComponent(LABELS.ready)}`));
+  }
   await Promise.all(writes);
 
   const rows = queue.map((p, i) => `| ${i + 1} | ${p.repo}#${p.number} | ${PRIORITY_NAME[p.rank]} | ${p.created.slice(0, 10)} | ${clock(times[i], tz)} |`);
   summary(['## CodeRabbit review queue', '', dry ? '_Dry run: nothing was posted._' : '', decision, '', ...(rows.length ? ['| # | PR | Priority | Opened | Review requested |', '|---|---|---|---|---|', ...rows] : []), ...parked.map((p) => `\nParked: ${p.repo}#${p.number} (${MAX_ATTEMPTS} requests, no review)`)].join('\n'));
-  return { queue, parked, decision, canTrigger };
+  summary(prs.filter((p) => p.clean).map((p) => `Ready to merge: ${p.repo}#${p.number}`).join('\n'));
+  return { queue, parked, decision, canTrigger, prs };
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {

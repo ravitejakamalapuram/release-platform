@@ -18,7 +18,8 @@ function gh(prs) {
     if ((m = /^\/repos\/(.+)\/pulls\/(\d+)\/reviews/.exec(path))) return send(pr(m[1], m[2]).reviews ?? []);
     if ((m = /^\/repos\/(.+)\/issues\/(\d+)\/comments/.exec(path)) && init.method === 'GET') return send(pr(m[1], m[2]).comments ?? []);
     if ((m = /^\/repos\/(.+)\/commits\/s(\d+)x\/status/.exec(path))) return send({ statuses: pr(m[1], m[2]).status ? [{ context: 'CodeRabbit', ...pr(m[1], m[2]).status }] : [] });
-    if (init.method === 'POST' || init.method === 'PATCH') return send({});
+    if ((m = /^\/repos\/(.+)\/commits\/s(\d+)x\/check-runs/.exec(path))) return send({ check_runs: pr(m[1], m[2]).checks ?? [] });
+    if (['POST', 'PATCH', 'DELETE'].includes(init.method)) return send({});
     throw new Error(`unrouted ${path}`);
   };
   fetchImpl.calls = calls;
@@ -89,4 +90,15 @@ test('dry run writes nothing; sticky comment is edited in place and only when it
   const body = statusBody({ rank: 1 }, { position: 1, total: 1, when: NOW, tz: 'Asia/Kolkata', state: 'requested' });
   const same = await go({ 'o/r': [pr(1, '2026-10-01T00:00:00Z', { comments: [{ id: 9, user: { login: 'me' }, body, created_at: '2026-10-19T10:00:00Z' }] })] });
   assert.equal(same.f.calls.filter((c) => c.method === 'PATCH').length, 0);
+});
+
+test('ready-to-merge label: added when the latest review has 0 actionable comments and CI is green, removed when not', async () => {
+  const rev = (n) => [{ user: { login: 'coderabbitai[bot]' }, commit_id: 's1x', body: `**Actionable comments posted: ${n}**` }];
+  const green = [{ status: 'completed', conclusion: 'success' }, { status: 'completed', conclusion: 'skipped' }];
+  const labelCalls = (f) => f.calls.filter((c) => /\/labels/.test(c.path)).map((c) => `${c.method} ${c.body?.labels ?? decodeURIComponent(c.path.split('/').pop())}`);
+  assert.deepEqual(labelCalls((await go({ 'o/r': [pr(1, '2026-10-01T00:00:00Z', { reviews: rev(0), checks: green })] })).f), ['POST ready-to-merge']);
+  assert.deepEqual(labelCalls((await go({ 'o/r': [pr(1, '2026-10-01T00:00:00Z', { reviews: rev(2), checks: green })] })).f), []);
+  assert.deepEqual(labelCalls((await go({ 'o/r': [pr(1, '2026-10-01T00:00:00Z', { reviews: rev(0), checks: [{ status: 'in_progress' }] })] })).f), []);
+  assert.deepEqual(labelCalls((await go({ 'o/r': [pr(1, '2026-10-01T00:00:00Z', { labels: ['ready-to-merge'], reviews: rev(1), checks: green })] })).f), ['DELETE ready-to-merge']);
+  assert.deepEqual(labelCalls((await go({ 'o/r': [pr(1, '2026-10-01T00:00:00Z', { reviews: rev(0), checks: green })] }, { dry: true })).f), []);
 });

@@ -510,10 +510,11 @@ CodeRabbit reviews about one PR per hour on these repos and only when asked, so 
 - **Priority:** label `review:urgent` to go first, `review:low` to go last; no label sits between. Same priority: earliest opened first.
 - **Position and time:** each queued PR gets one comment (edited in place) with its position and the expected review time in IST; the run summary shows the whole line.
 - **No wasted slots:** nothing is posted while a review runs, within 55 minutes of the last command (ours or a person's), or during a CodeRabbit rate limit. A PR that got 3 commands for one commit with no review is parked until it gets a new commit.
+- **Ready to merge:** a PR whose latest CodeRabbit review says 0 actionable comments, with all CI checks green, gets the label `ready-to-merge` (removed again if that stops being true, e.g. after a push). The job never merges; it is checked hourly, so the label can lag by up to an hour.
 - **Dry run:** run the workflow by hand with `dry_run` on, or `DRY_RUN=1 node scripts/review-queue.mjs`.
 
 One-time setup, owner only: create a fine-grained personal access token (CodeRabbit ignores commands from bots) with
-repository access to those six repos, permissions **Pull requests: Read and write** and **Commit statuses: Read**,
+repository access to those six repos, permissions **Pull requests: Read and write** and **Commit statuses: Read** and **Checks: Read**,
 and save it as the repository secret `REVIEW_QUEUE_TOKEN` in this repo. To change the repos set the variable `REVIEW_QUEUE_REPOS` (comma-separated `owner/repo`).
 
 ## Crash issues
