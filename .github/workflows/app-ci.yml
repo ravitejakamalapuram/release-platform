@@ -17,6 +17,10 @@ on:
         description: 'Optional comma list of target types to check (chrome,android). Empty = all.'
         type: string
         default: ''
+      require_report_problem:
+        description: 'Fail (not just warn) when a Chrome app lacks the report-problem module. See modules/report-problem/README.md'
+        type: boolean
+        default: false
       platform_ref:
         description: 'Advanced: release-platform ref for the helper scripts. Default: the ref this workflow was called at.'
         type: string
@@ -100,6 +104,12 @@ jobs:
           fi
           yq -o=json '.' release.yaml > "$RUNNER_TEMP/release.json"
           node "$GITHUB_WORKSPACE/platform/scripts/validate.mjs" --config "$RUNNER_TEMP/release.json" --repo . --targets "$TARGETS"
+
+      - name: Report-a-problem module
+        env:
+          REQUIRE_REPORT_PROBLEM: ${{ inputs.require_report_problem }}
+          DIRECTORY: ${{ inputs.directory }}
+        run: node platform/scripts/check-report-problem.mjs --repo "app/$DIRECTORY" --platform platform
 
       # Targets with `listing:`: store rules (text limits, image sizes/counts) checked on every PR.
       - name: Validate store listings
