@@ -36,11 +36,13 @@ test('urgent first, then no label, then low; oldest first within a priority', ()
 });
 
 test('slots: first now when allowed, later ones one hour apart on the cron minute', () => {
-  const s = slots(3, { now: NOW, blockedUntil: 0, canTrigger: true, tickMinute: 17 });
+  const s = slots(3, { now: NOW, blockedUntil: 0, canTrigger: true });
   assert.equal(s[0], NOW);
   assert.equal(new Date(s[1]).toISOString(), '2026-10-19T19:17:00.000Z');
   assert.equal(new Date(s[2]).toISOString(), '2026-10-19T20:17:00.000Z');
-  assert.equal(new Date(nextTick(T('2026-10-19T19:17:00Z'), 17)).toISOString(), '2026-10-19T19:17:00.000Z');
+  assert.equal(new Date(nextTick(T('2026-10-19T19:17:00Z'))).toISOString(), '2026-10-19T19:17:00.000Z');
+  assert.equal(new Date(nextTick(T('2026-10-19T19:18:00Z'))).toISOString(), '2026-10-19T19:32:00.000Z');
+  assert.equal(new Date(nextTick(T('2026-10-19T19:48:00Z'))).toISOString(), '2026-10-19T20:02:00.000Z');
 });
 
 test('parses the wait out of a rate-limit notice', () => {

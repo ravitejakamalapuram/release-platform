@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Hourly CodeRabbit review queue. CodeRabbit reviews about one PR per hour on these repos and only on a
+// CodeRabbit review queue (runs every 15 minutes, sends at most one request per 55). CodeRabbit reviews about one PR per hour on these repos and only on a
 // manual "review" command, so this is the ONLY thing that posts that command. Each run:
 //   1. lists open non-draft PRs in REVIEW_QUEUE_REPOS that CodeRabbit has not reviewed at their head commit,
 //   2. orders them: label `review:urgent` first, no label next, `review:low` last, then oldest opened first,
@@ -23,6 +23,7 @@ const STATUS = 'review-queue:status';
 const MIN = 60_000;
 const COOLDOWN = 55 * MIN; // slots are one hour apart; 5 minutes of slack for late cron runs
 const REVIEW_TAKES = 15 * MIN; // CodeRabbit answered 10-13 minutes after a command in the PRs we looked at
+export const TICKS = [2, 17, 32, 47]; // keep in step with the cron line in review-queue.yml
 const MAX_ATTEMPTS = 3; // commands per head commit with no review before a PR is parked
 
 export const priority = (labels) => (labels.includes(LABELS.urgent) ? 0 : labels.includes(LABELS.low) ? 2 : 1);
@@ -33,18 +34,18 @@ export function order(prs) {
   return [...prs].sort((a, b) => a.rank - b.rank || Date.parse(a.created) - Date.parse(b.created) || a.repo.localeCompare(b.repo) || a.number - b.number);
 }
 
-/** First cron tick (minute `at` of an hour, UTC) at or after `t`. */
-export function nextTick(t, at) {
+/** First cron tick (UTC minutes of each hour, as in review-queue.yml) at or after `t`. */
+export function nextTick(t, minutes = TICKS) {
   const d = new Date(Math.ceil(t / MIN) * MIN);
-  while (d.getUTCMinutes() !== at) d.setTime(d.getTime() + MIN);
+  while (!minutes.includes(d.getUTCMinutes())) d.setTime(d.getTime() + MIN);
   return d.getTime();
 }
 
 /** Time each queue position gets its command: the first now if allowed, else the next tick; then one slot apart. */
-export function slots(count, { now, blockedUntil, canTrigger, tickMinute }) {
+export function slots(count, { now, blockedUntil, canTrigger }) {
   const out = [];
   for (let i = 0; i < count; i++) {
-    out.push(i === 0 ? (canTrigger ? now : nextTick(Math.max(now, blockedUntil), tickMinute)) : nextTick(out[i - 1] + COOLDOWN, tickMinute));
+    out.push(i === 0 ? (canTrigger ? now : nextTick(Math.max(now, blockedUntil))) : nextTick(out[i - 1] + COOLDOWN));
   }
   return out;
 }
@@ -68,7 +69,7 @@ export function statusBody(pr, { position, total, when, tz, state }) {
   else {
     lines.push(`**CodeRabbit queue:** position ${position} of ${total} · priority ${PRIORITY_NAME[pr.rank]}`);
     lines.push(`Review ${state === 'requested' ? 'requested' : 'will be requested about'} ${clock(when, tz)}; CodeRabbit usually answers about ${REVIEW_TAKES / MIN} minutes later.`);
-    lines.push('Label `review:urgent` to go first or `review:low` to go last. Updated every hour; nothing to do otherwise.');
+    lines.push('Label `review:urgent` to go first or `review:low` to go last. Updated every 15 minutes; nothing to do otherwise.');
   }
   return lines.join('\n\n');
 }
@@ -143,7 +144,7 @@ async function inspect(api, repo, pr) {
   };
 }
 
-export async function run({ token, repos, dry = false, tz = 'Asia/Kolkata', tickMinute = 17, fetchImpl = fetch, now = Date.now() }) {
+export async function run({ token, repos, dry = false, tz = 'Asia/Kolkata', fetchImpl = fetch, now = Date.now() }) {
   const api = client(fetchImpl, token);
   const open = [];
   for (const repo of repos) for (const pr of await api.list(`/repos/${repo}/pulls?state=open`)) if (!pr.draft) open.push([repo, pr]);
@@ -155,7 +156,7 @@ export async function run({ token, repos, dry = false, tz = 'Asia/Kolkata', tick
   const running = prs.some((p) => p.running);
   const blockedUntil = Math.max(0, ...prs.map((p) => Math.max(p.limitUntil, p.lastTrigger ? p.lastTrigger + COOLDOWN : 0)), running ? now + REVIEW_TAKES : 0);
   const canTrigger = blockedUntil <= now;
-  const times = slots(queue.length, { now, blockedUntil, canTrigger, tickMinute });
+  const times = slots(queue.length, { now, blockedUntil, canTrigger });
 
   const writes = [];
   const upsert = (p, body) => {

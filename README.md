@@ -503,14 +503,14 @@ failing the run.
 ## CodeRabbit review queue
 
 CodeRabbit reviews about one PR per hour on these repos and only when asked, so PRs used to fight over the slot.
-[`review-queue.yml`](.github/workflows/review-queue.yml) runs at :17 every hour and is the only thing that posts
+[`review-queue.yml`](.github/workflows/review-queue.yml) runs every 15 minutes (at :02, :17, :32, :47 UTC) and is the only thing that posts
 `@coderabbitai review`: it picks the first PR in the line across `TeluguPanchangam`, `release-platform`, `InvTrack`, `session-transfer`, `cors-enabler` and `json-workbench`
 (open, not draft, no CodeRabbit review at its latest commit) and asks for one review. PRs and agents just open the PR and wait.
 
 - **Priority:** label `review:urgent` to go first, `review:low` to go last; no label sits between. Same priority: earliest opened first.
 - **Position and time:** each queued PR gets one comment (edited in place) with its position and the expected review time in IST; the run summary shows the whole line.
 - **No wasted slots:** nothing is posted while a review runs, within 55 minutes of the last command (ours or a person's), or during a CodeRabbit rate limit. A PR that got 3 commands for one commit with no review is parked until it gets a new commit.
-- **Ready to merge:** a PR whose latest CodeRabbit review says 0 actionable comments, with all CI checks green, gets the label `ready-to-merge` (removed again if that stops being true, e.g. after a push). The job never merges; it is checked hourly, so the label can lag by up to an hour.
+- **Ready to merge:** a PR whose latest CodeRabbit review says 0 actionable comments, with all CI checks green, gets the label `ready-to-merge` (removed again if that stops being true, e.g. after a push). The job never merges; it is checked every 15 minutes, so the label can lag by up to that.
 - **Dry run:** run the workflow by hand with `dry_run` on, or `DRY_RUN=1 node scripts/review-queue.mjs`.
 
 One-time setup, owner only: create a fine-grained personal access token (CodeRabbit ignores commands from bots) with
