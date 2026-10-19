@@ -54,9 +54,9 @@ const clock = (t, tz) => `${new Intl.DateTimeFormat('en-GB', { timeZone: tz, wee
 /** Wait CodeRabbit asks for ("Next included review available in 25 minutes", "Please wait 12 minutes and 30 seconds"), in ms, or 0. */
 export function rateLimitWait(body) {
   if (!/rate limit|review limit reached/i.test(body)) return 0;
-  const at = body.search(/(?:wait|available in)\s+\d/i);
+  const at = body.search(/(?:wait|available in)\s+\**\d/i);
   if (at < 0) return 0;
-  const tail = body.slice(at, at + 80);
+  const tail = body.slice(at, at + 80).replace(/\*/g, '');
   const n = (unit) => Number(new RegExp(`(\\d+)\\s*${unit}`, 'i').exec(tail)?.[1] ?? 0);
   return ((n('hours?') * 60 + n('minutes?')) * 60 + n('seconds?')) * 1000;
 }

@@ -47,6 +47,7 @@ test('parses the wait out of a rate-limit notice', () => {
   assert.equal(rateLimitWait('Rate limit exceeded. Please wait 12 minutes and 30 seconds before requesting another review.'), 750_000);
   assert.equal(rateLimitWait('Rate limit exceeded. Please wait 1 hour and 5 minutes'), 3_900_000);
   assert.equal(rateLimitWait('> [!WARNING]\n> ## Review limit reached\n> Wait for the free limit to reset to keep reviewing.\n> **Next included review available in 25 minutes.**'), 1_500_000);
+  assert.equal(rateLimitWait('### Rate Limit Exceeded\n\nhave exceeded the limit for the number of chat messages per hour. Please wait **15 minutes and 40 seconds** before sending another message.'), 940_000);
   assert.equal(rateLimitWait('Looks good, no rate limit hit? wait'), 0);
   assert.equal(rateLimitWait('Walkthrough: nothing to wait on'), 0);
 });
