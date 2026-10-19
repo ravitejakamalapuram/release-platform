@@ -1,0 +1,129 @@
+# Reusable, CRASHLYTICS ONLY (Android / iOS / Flutter apps that report to Firebase Crashlytics).
+# Chrome extensions and other apps without Crashlytics are not supported: they have no crash source here.
+#
+# Files one GitHub issue (label `crash`) per new Crashlytics crash in the CALLING repo,
+# with counts, versions, device/OS and the stack trace, so the issue loop can fix it.
+#
+# Callers (see templates/crash-issues-caller.yml) need:
+#   permissions: { contents: read, issues: write, id-token: write }
+#
+# Keyless like the store workflows: GitHub OIDC -> Workload Identity Federation -> release-bot, which
+# needs the Firebase Crashlytics Viewer role on the app's Firebase project (one-time, per app).
+# Runs platform scripts only; no app code executes in this job. Dedupe is by the Crashlytics issue id
+# in a hidden marker in each issue body (open or closed), so reruns never duplicate.
+name: crash-issues
+
+on:
+  workflow_call:
+    inputs:
+      firebase_project:
+        description: 'Firebase project id, e.g. invtracker-b19d1'
+        type: string
+        required: true
+      firebase_app_id:
+        description: 'Firebase app id, e.g. 1:784857267556:android:5ba7e064263d78f61dce71'
+        type: string
+        required: true
+      dry_run:
+        description: 'Print the issues instead of filing them'
+        type: boolean
+        default: false
+      window_days:
+        description: 'Look-back window for crashes'
+        type: number
+        default: 7
+      max_new:
+        description: 'Most issues to file per run'
+        type: number
+        default: 5
+      include_logs:
+        description: 'Copy the last app log lines (Crashlytics.log messages) into the issue. Off by default: they can hold personal data and the app repo may be public.'
+        type: boolean
+        default: false
+      platform_ref:
+        description: 'Advanced: release-platform ref for the helper script. Default: the ref this workflow was called at.'
+        type: string
+        default: ''
+
+concurrency:
+  group: release-platform-crash-issues-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions: {}
+
+env:
+  WIF_PROVIDER: projects/335964689163/locations/global/workloadIdentityPools/github/providers/github-oidc
+  SERVICE_ACCOUNT: release-bot@rk-release-platform.iam.gserviceaccount.com
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  crash-issues:
+    name: File crash issues (Crashlytics)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+      id-token: write
+    steps:
+      - name: Check this is a Crashlytics mobile app
+        env:
+          APP_ID: ${{ inputs.firebase_app_id }}
+        run: |
+          if ! [[ "$APP_ID" =~ ^[0-9]+:[0-9]+:(android|ios):[0-9a-f]+$ ]]; then
+            echo "::error::crash-issues reads Firebase Crashlytics, which only exists for Android and iOS apps (app id like 1:123:android:abc). Chrome extensions and other apps are not supported."
+            exit 1
+          fi
+
+      - name: Resolve release-platform ref
+        id: platform
+        env:
+          OVERRIDE: ${{ inputs.platform_ref }}
+        run: |
+          if [ -n "$OVERRIDE" ]; then echo "sha=$OVERRIDE" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+            echo "::error::The calling workflow must grant 'permissions: id-token: write'."; exit 1
+          fi
+          token=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=release-platform-self" | jq -r .value)
+          echo "::add-mask::$token"
+          payload=$(cut -d. -f2 <<<"$token" | tr '_-' '/+')
+          while [ $(( ${#payload} % 4 )) -ne 0 ]; do payload="${payload}="; done
+          echo "sha=$(base64 -d <<<"$payload" | jq -r .job_workflow_sha)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v7
+        with:
+          repository: ravitejakamalapuram/release-platform
+          ref: ${{ steps.platform.outputs.sha }}
+          path: platform
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          package-manager-cache: false
+          node-version: '22'
+
+      - name: Authenticate (Crashlytics, read-only)
+        id: auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.SERVICE_ACCOUNT }}
+          token_format: access_token
+          access_token_scopes: https://www.googleapis.com/auth/cloud-platform
+          create_credentials_file: false
+
+      - name: File crash issues
+        env:
+          GOOGLE_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          FIREBASE_PROJECT: ${{ inputs.firebase_project }}
+          FIREBASE_APP_ID: ${{ inputs.firebase_app_id }}
+          GITHUB_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+          WINDOW_DAYS: ${{ inputs.window_days }}
+          MAX_NEW: ${{ inputs.max_new }}
+          INCLUDE_LOGS: ${{ inputs.include_logs && '1' || '' }}
+        run: node platform/scripts/crash-issues.mjs
