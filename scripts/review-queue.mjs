@@ -93,17 +93,45 @@ function client(fetchImpl, token) {
       if (batch.length < 100) return rows;
     }
   };
-  return { call, list };
+  const pages = async (path, key) => {
+    const rows = [];
+    for (let page = 1; ; page++) {
+      const batch = (await call('GET', `${path}${path.includes('?') ? '&' : '?'}per_page=100&page=${page}`))[key] ?? [];
+      rows.push(...batch);
+      if (batch.length < 100) return rows;
+    }
+  };
+  const graphql = async (query, variables) => {
+    const out = await call('POST', '/graphql', { query, variables });
+    if (out?.errors?.length) throw new Error(`GitHub GraphQL failed: ${JSON.stringify(out.errors).slice(0, 200)}`);
+    return out.data;
+  };
+  return { call, list, pages, graphql };
 }
 
-async function inspect(api, repo, pr) {
+const THREADS = 'query($o:String!,$r:String!,$n:Int!,$after:String){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor}nodes{isResolved comments(first:1){nodes{author{login}}}}}}}}';
+
+// True when CodeRabbit still has an unresolved review thread open on the PR.
+async function openBotThreads(api, repo, number) {
+  const [o, r] = repo.split('/');
+  for (let after = null; ; ) {
+    const t = (await api.graphql(THREADS, { o, r, n: number, after })).repository.pullRequest.reviewThreads;
+    if (t.nodes.some((x) => !x.isResolved && x.comments.nodes[0]?.author?.login === 'coderabbitai')) return true;
+    if (!t.pageInfo.hasNextPage) return false;
+    after = t.pageInfo.endCursor;
+  }
+}
+
+const TRUSTED = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+
+async function inspect(api, repo, pr, me) {
   const [reviews, comments, status] = await Promise.all([
     api.list(`/repos/${repo}/pulls/${pr.number}/reviews`),
     api.list(`/repos/${repo}/issues/${pr.number}/comments`),
-    api.call('GET', `/repos/${repo}/commits/${pr.head.sha}/status`),
+    api.pages(`/repos/${repo}/commits/${pr.head.sha}/status`, 'statuses'),
   ]);
   const sha = pr.head.sha;
-  const cr = (status.statuses ?? []).find((s) => s.context === 'CodeRabbit');
+  const cr = status.find((s) => s.context === 'CodeRabbit');
   const triggers = [];
   let sticky = null;
   let limitUntil = 0;
@@ -111,8 +139,8 @@ async function inspect(api, repo, pr) {
     const at = Date.parse(c.created_at);
     const seen = Date.parse(c.updated_at ?? c.created_at); // CodeRabbit edits its limit notice in place
     const mark = new RegExp(`<!-- ${TRIGGER} sha=(\\w+) -->`).exec(c.body);
-    if (mark) triggers.push({ at, sha: mark[1] });
-    else if (/^\s*@coderabbitai\s+(full\s+)?review\b/i.test(c.body) && c.user?.login !== BOT) triggers.push({ at, sha: null });
+    if (mark && c.user?.login === me) triggers.push({ at, sha: mark[1] });
+    else if (!mark && TRUSTED.has(c.author_association) && /^\s*@coderabbitai\s+(full\s+)?review\b/i.test(c.body) && c.user?.login !== BOT) triggers.push({ at, sha: null });
     if (c.body.includes(`<!-- ${STATUS} -->`)) sticky = c;
     if (c.user?.login === BOT) limitUntil = Math.max(limitUntil, rateLimitWait(c.body) ? seen + rateLimitWait(c.body) : 0);
   }
@@ -121,10 +149,10 @@ async function inspect(api, repo, pr) {
   if (reviewed) {
     const last = reviews.filter((r) => r.user?.login === BOT && r.commit_id === sha).pop();
     const n = /Actionable comments posted:\s*(\d+)/i.exec(last?.body ?? '');
-    const checks = await api.call('GET', `/repos/${repo}/commits/${sha}/check-runs?per_page=100`);
-    const ok = (checks.check_runs ?? []).every((c) => c.status === 'completed' && ['success', 'skipped', 'neutral'].includes(c.conclusion));
-    const others = (status.statuses ?? []).filter((x) => x.context !== 'CodeRabbit').every((x) => x.state === 'success');
-    clean = n !== null && Number(n[1]) === 0 && ok && others;
+    const checks = await api.pages(`/repos/${repo}/commits/${sha}/check-runs`, 'check_runs');
+    const ok = checks.every((c) => c.status === 'completed' && ['success', 'skipped', 'neutral'].includes(c.conclusion));
+    const others = status.filter((x) => x.context !== 'CodeRabbit').every((x) => x.state === 'success');
+    clean = n !== null && Number(n[1]) === 0 && ok && others && !(await openBotThreads(api, repo, pr.number));
   }
   return {
     repo,
@@ -146,10 +174,11 @@ async function inspect(api, repo, pr) {
 
 export async function run({ token, repos, dry = false, tz = 'Asia/Kolkata', fetchImpl = fetch, now = Date.now() }) {
   const api = client(fetchImpl, token);
+  const me = (await api.call('GET', '/user')).login;
   const open = [];
   for (const repo of repos) for (const pr of await api.list(`/repos/${repo}/pulls?state=open`)) if (!pr.draft) open.push([repo, pr]);
   const prs = [];
-  for (const [repo, pr] of open) prs.push(await inspect(api, repo, pr));
+  for (const [repo, pr] of open) prs.push(await inspect(api, repo, pr, me));
 
   const parked = prs.filter((p) => !p.reviewed && p.attempts >= MAX_ATTEMPTS);
   const queue = order(prs.filter((p) => !p.reviewed && p.attempts < MAX_ATTEMPTS));

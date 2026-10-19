@@ -6,7 +6,7 @@ const T = (s) => Date.parse(s);
 const NOW = T('2026-10-19T18:20:00Z');
 
 // Routed GitHub double: prs = { 'o/r': [{ number, created_at, labels, draft, reviews, comments, status }] }
-function gh(prs) {
+function gh(prs, threads = []) {
   const calls = [];
   const fetchImpl = async (url, init = {}) => {
     const path = url.replace('https://api.github.com', '');
@@ -14,6 +14,8 @@ function gh(prs) {
     const send = (b) => ({ ok: true, status: 200, text: async () => JSON.stringify(b) });
     const pr = (repo, n) => prs[repo].find((p) => p.number === Number(n));
     let m;
+    if (path === '/user') return send({ login: 'me' });
+    if (path === '/graphql') return send({ data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: false }, nodes: threads } } } } });
     if ((m = /^\/repos\/(.+)\/pulls\?state=open/.exec(path))) return send(prs[m[1]].map((p) => ({ number: p.number, title: `PR ${p.number}`, draft: !!p.draft, created_at: p.created_at, labels: (p.labels ?? []).map((name) => ({ name })), head: { sha: `s${p.number}x` } })));
     if ((m = /^\/repos\/(.+)\/pulls\/(\d+)\/reviews/.exec(path))) return send(pr(m[1], m[2]).reviews ?? []);
     if ((m = /^\/repos\/(.+)\/issues\/(\d+)\/comments/.exec(path)) && init.method === 'GET') return send(pr(m[1], m[2]).comments ?? []);
@@ -75,7 +77,7 @@ test('reviewed at the head commit leaves the queue; an older review does not', a
 test('no command while a review runs, within 55 minutes of the last command, or inside a rate limit', async () => {
   const q = [pr(1, '2026-10-01T00:00:00Z')];
   assert.equal((await go({ 'o/r': [{ ...q[0], status: { state: 'pending' } }] })).f.calls.filter((c) => c.method === 'POST' && c.body.body.startsWith('@')).length, 0);
-  const recent = { user: { login: 'someone' }, body: '@coderabbitai review', created_at: '2026-10-19T17:40:00Z' };
+  const recent = { user: { login: 'someone' }, body: '@coderabbitai review', author_association: 'OWNER', created_at: '2026-10-19T17:40:00Z' };
   assert.equal((await go({ 'o/r': [{ ...q[0], comments: [recent] }] })).r.canTrigger, false);
   const limited = { user: { login: 'coderabbitai[bot]' }, body: 'Rate limit exceeded. Please wait 40 minutes and 0 seconds.', created_at: '2026-10-19T18:00:00Z' };
   assert.equal((await go({ 'o/r': [{ ...q[0], comments: [limited] }] })).r.canTrigger, false);
@@ -105,4 +107,15 @@ test('ready-to-merge label: added when the latest review has 0 actionable commen
   assert.deepEqual(labelCalls((await go({ 'o/r': [pr(1, '2026-10-01T00:00:00Z', { reviews: rev(0), checks: [{ status: 'in_progress' }] })] })).f), []);
   assert.deepEqual(labelCalls((await go({ 'o/r': [pr(1, '2026-10-01T00:00:00Z', { labels: ['ready-to-merge'], reviews: rev(1), checks: green })] })).f), ['DELETE ready-to-merge']);
   assert.deepEqual(labelCalls((await go({ 'o/r': [pr(1, '2026-10-01T00:00:00Z', { reviews: rev(0), checks: green })] }, { dry: true })).f), []);
+});
+
+test('an open CodeRabbit thread blocks ready-to-merge; strangers cannot fake triggers or commands', async () => {
+  const rev = [{ user: { login: 'coderabbitai[bot]' }, commit_id: 's1x', body: '**Actionable comments posted: 0**' }];
+  const open = [{ isResolved: false, comments: { nodes: [{ author: { login: 'coderabbitai' } }] } }];
+  const f = gh({ 'o/r': [pr(1, '2026-10-01T00:00:00Z', { reviews: rev, checks: [] })] }, open);
+  await run({ token: 't', repos: ['o/r'], fetchImpl: f, now: NOW });
+  assert.equal(f.calls.filter((c) => /\/labels/.test(c.path)).length, 0);
+  const fake = [{ user: { login: 'stranger' }, body: '<!-- review-queue:trigger sha=s1x -->', created_at: '2026-10-19T18:10:00Z' }, { user: { login: 'stranger' }, body: '@coderabbitai review', author_association: 'NONE', created_at: '2026-10-19T18:10:00Z' }];
+  const { r } = await go({ 'o/r': [pr(1, '2026-10-01T00:00:00Z', { comments: fake })] });
+  assert.equal(r.canTrigger, true);
 });
