@@ -1,0 +1,44 @@
+# Hourly CodeRabbit review queue for the repos in REVIEW_QUEUE_REPOS (CodeRabbit allows about one review per
+# hour on them, and only on a manual command). This workflow is the ONLY thing that posts that command, so
+# there are no races. See scripts/review-queue.mjs for the rules.
+#
+# Setup, owner only: add the repository secret REVIEW_QUEUE_TOKEN (README, "CodeRabbit review queue").
+# Until it is set the job passes and does nothing.
+name: review-queue
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Print the queue and what would be posted, post nothing'
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: review-queue
+  cancel-in-progress: false
+
+jobs:
+  queue:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          package-manager-cache: false
+          node-version: '22'
+      - name: Request the next review
+        env:
+          REVIEW_QUEUE_TOKEN: ${{ secrets.REVIEW_QUEUE_TOKEN }}
+          REVIEW_QUEUE_REPOS: ${{ vars.REVIEW_QUEUE_REPOS || 'ravitejakamalapuram/TeluguPanchangam,ravitejakamalapuram/release-platform' }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+        run: node scripts/review-queue.mjs
