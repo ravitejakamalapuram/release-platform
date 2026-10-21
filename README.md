@@ -580,6 +580,7 @@ build job, before packaging), `version_file` (optional baseline source for untag
 | `release_notes` | generated notes | Markdown changelog; first `## ` section → en-US "What's new" |
 | `signing` | `ANDROID_*` names | secret names: `keystore_base64`, `keystore_password`, `key_alias`, `key_password` |
 | `listing` | none | fastlane-style metadata directory; see [Store listings](#store-listings) |
+| `symbols` | none (off) | `{dir, crashlytics_app_id_secret}`: keeps the Dart split-debug symbols in `dir` as the per-build artifact `symbols-<app>-<version>-<package>` and uploads them to Crashlytics (`firebase crashlytics:symbols:upload`, keyless) before the Play upload. The build command must write `dir` (`--split-debug-info=<dir>`); an empty dir fails the build. The release service account needs Crashlytics symbol-upload rights. |
 
 Reusable workflow inputs besides the above: `directory` (where `release.yaml` lives; tags stay
 repo-wide), `platform_ref` (advanced; which release-platform commit's scripts to use — by default

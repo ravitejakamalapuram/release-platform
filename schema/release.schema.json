@@ -175,6 +175,24 @@
           "$ref": "#/$defs/relativePath",
           "description": "Markdown changelog; its first section becomes the en-US 'What's new' text."
         },
+        "symbols": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "dir",
+            "crashlytics_app_id_secret"
+          ],
+          "description": "Optional. Directory of Dart split-debug symbols (the --split-debug-info directory) the build writes. Kept as a per-build workflow artifact and uploaded to Crashlytics before the Play upload. Absent = nothing happens.",
+          "properties": {
+            "dir": {
+              "$ref": "#/$defs/relativePath"
+            },
+            "crashlytics_app_id_secret": {
+              "$ref": "#/$defs/secretName",
+              "description": "Name of the app-repo secret holding the Firebase Android App ID (1:<number>:android:<hash>)."
+            }
+          }
+        },
         "signing": {
           "type": "object",
           "additionalProperties": false,

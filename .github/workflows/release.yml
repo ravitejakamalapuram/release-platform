@@ -343,6 +343,8 @@ jobs:
           # Flatten signing secret names (Android): signing_keystore_base64, ...
           jq -r '(.signing // {}) | to_entries[] | "signing_\(.key)=\(.value)"' <<<"$TARGET" >> "$GITHUB_OUTPUT"
           echo "signing_names=$(jq -r '(.signing // {}) | [.[]] | join(", ")' <<<"$TARGET")" >> "$GITHUB_OUTPUT"
+          # Optional Dart symbols (Android): symbols_dir, symbols_crashlytics_app_id_secret
+          jq -r '(.symbols // {}) | to_entries[] | "symbols_\(.key)=\(.value)"' <<<"$TARGET" >> "$GITHUB_OUTPUT"
           jq . <<<"$TARGET"
 
       - uses: actions/checkout@v7
@@ -468,6 +470,27 @@ jobs:
       - name: Remove upload key
         if: always()
         run: rm -f "$RUNNER_TEMP/upload-key.jks" ~/.gradle/gradle.properties
+
+      # Optional (android.symbols). Kept as its own per-build artifact so symbols survive even if the
+      # Crashlytics upload later fails. An empty/missing dir fails the build: it means the build
+      # command is missing --split-debug-info, and the upload would silently do nothing.
+      - name: Check Dart symbols
+        if: ${{ steps.target.outputs.symbols_dir != '' }}
+        working-directory: app/${{ inputs.directory }}
+        env:
+          SYMBOLS_DIR: ${{ steps.target.outputs.symbols_dir }}
+        run: |
+          if [ -z "$(find "$SYMBOLS_DIR" -type f 2>/dev/null | head -n 1)" ]; then
+            echo "::error::android.symbols.dir '$SYMBOLS_DIR' is missing or empty after the build. Add --split-debug-info=$SYMBOLS_DIR to the build command."
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v7
+        if: ${{ steps.target.outputs.symbols_dir != '' }}
+        with:
+          name: symbols-${{ needs.plan.outputs.app }}-${{ needs.plan.outputs.version }}-${{ steps.target.outputs.package }}
+          path: app/${{ inputs.directory }}/${{ steps.target.outputs.symbols_dir }}
+          if-no-files-found: error
 
       - uses: actions/upload-artifact@v7
         with:
@@ -617,6 +640,8 @@ jobs:
           # Flatten signing secret names (Android): signing_keystore_base64, ...
           jq -r '(.signing // {}) | to_entries[] | "signing_\(.key)=\(.value)"' <<<"$TARGET" >> "$GITHUB_OUTPUT"
           echo "signing_names=$(jq -r '(.signing // {}) | [.[]] | join(", ")' <<<"$TARGET")" >> "$GITHUB_OUTPUT"
+          # Optional Dart symbols (Android): symbols_dir, symbols_crashlytics_app_id_secret
+          jq -r '(.symbols // {}) | to_entries[] | "symbols_\(.key)=\(.value)"' <<<"$TARGET" >> "$GITHUB_OUTPUT"
           jq . <<<"$TARGET"
 
       - uses: actions/checkout@v7
@@ -654,6 +679,36 @@ jobs:
           PACKAGE: ${{ steps.target.outputs.package }}
           VERSION_CODE: ${{ needs.plan.outputs.version_code }}
         run: node platform/scripts/play.mjs preflight --package "$PACKAGE" --version-code "$VERSION_CODE"
+
+      # Optional (android.symbols). Runs BEFORE the Play upload so a failure here blocks the release
+      # instead of shipping a build whose crashes cannot be symbolicated. Fails loudly; the symbols
+      # artifact was already kept by the build job. The app id secret is exposed to this step only.
+      - name: Download Dart symbols
+        if: ${{ !inputs.dry_run && steps.target.outputs.symbols_dir != '' }}
+        uses: actions/download-artifact@v8
+        with:
+          name: symbols-${{ needs.plan.outputs.app }}-${{ needs.plan.outputs.version }}-${{ steps.target.outputs.package }}
+          path: symbols
+
+      - name: Authenticate to Google for Crashlytics (keyless)
+        if: ${{ !inputs.dry_run && steps.target.outputs.symbols_dir != '' }}
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.SERVICE_ACCOUNT }}
+          access_token_scopes: https://www.googleapis.com/auth/cloud-platform
+
+      - name: Upload Dart symbols to Crashlytics
+        if: ${{ !inputs.dry_run && steps.target.outputs.symbols_dir != '' }}
+        env:
+          FIREBASE_APP_ID: ${{ secrets[steps.target.outputs.symbols_crashlytics_app_id_secret] }}
+          SECRET_NAME: ${{ steps.target.outputs.symbols_crashlytics_app_id_secret }}
+        run: |
+          if [ -z "$FIREBASE_APP_ID" ]; then
+            echo "::error::Secret '$SECRET_NAME' (android.symbols.crashlytics_app_id_secret) is empty or missing (and the caller must use 'secrets: inherit')."
+            exit 1
+          fi
+          npx --yes firebase-tools@13.35.1 crashlytics:symbols:upload --app="$FIREBASE_APP_ID" symbols
 
       - name: Upload to Play
         id: publish
