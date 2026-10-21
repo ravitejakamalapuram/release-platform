@@ -341,10 +341,12 @@ jobs:
             printf '%s<<%s\n%s\n%s\n' "$k" "$d" "$v" "$d" >> "$GITHUB_OUTPUT"
           done < <(jq -r 'keys[]' <<<"$TARGET")
           # Flatten signing secret names (Android): signing_keystore_base64, ...
-          jq -r '(.signing // {}) | to_entries[] | "signing_\(.key)=\(.value)"' <<<"$TARGET" >> "$GITHUB_OUTPUT"
-          echo "signing_names=$(jq -r '(.signing // {}) | [.[]] | join(", ")' <<<"$TARGET")" >> "$GITHUB_OUTPUT"
-          # Optional Dart symbols (Android): symbols_dir, symbols_crashlytics_app_id_secret
-          jq -r '(.symbols // {}) | to_entries[] | "symbols_\(.key)=\(.value)"' <<<"$TARGET" >> "$GITHUB_OUTPUT"
+          {
+            jq -r '(.signing // {}) | to_entries[] | "signing_\(.key)=\(.value)"' <<<"$TARGET"
+            echo "signing_names=$(jq -r '(.signing // {}) | [.[]] | join(", ")' <<<"$TARGET")"
+            # Optional Dart symbols (Android): symbols_dir, symbols_crashlytics_app_id_secret
+            jq -r '(.symbols // {}) | to_entries[] | "symbols_\(.key)=\(.value)"' <<<"$TARGET"
+          } >> "$GITHUB_OUTPUT"
           jq . <<<"$TARGET"
 
       - uses: actions/checkout@v7
@@ -638,10 +640,12 @@ jobs:
             printf '%s<<%s\n%s\n%s\n' "$k" "$d" "$v" "$d" >> "$GITHUB_OUTPUT"
           done < <(jq -r 'keys[]' <<<"$TARGET")
           # Flatten signing secret names (Android): signing_keystore_base64, ...
-          jq -r '(.signing // {}) | to_entries[] | "signing_\(.key)=\(.value)"' <<<"$TARGET" >> "$GITHUB_OUTPUT"
-          echo "signing_names=$(jq -r '(.signing // {}) | [.[]] | join(", ")' <<<"$TARGET")" >> "$GITHUB_OUTPUT"
-          # Optional Dart symbols (Android): symbols_dir, symbols_crashlytics_app_id_secret
-          jq -r '(.symbols // {}) | to_entries[] | "symbols_\(.key)=\(.value)"' <<<"$TARGET" >> "$GITHUB_OUTPUT"
+          {
+            jq -r '(.signing // {}) | to_entries[] | "signing_\(.key)=\(.value)"' <<<"$TARGET"
+            echo "signing_names=$(jq -r '(.signing // {}) | [.[]] | join(", ")' <<<"$TARGET")"
+            # Optional Dart symbols (Android): symbols_dir, symbols_crashlytics_app_id_secret
+            jq -r '(.symbols // {}) | to_entries[] | "symbols_\(.key)=\(.value)"' <<<"$TARGET"
+          } >> "$GITHUB_OUTPUT"
           jq . <<<"$TARGET"
 
       - uses: actions/checkout@v7
