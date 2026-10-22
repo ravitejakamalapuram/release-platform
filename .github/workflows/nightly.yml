@@ -42,7 +42,7 @@ on:
         type: string
         default: 'flutter test --tags golden --update-goldens'
       golden_artifact_path:
-        description: 'PNGs uploaded as the updated-goldens artifact, relative to the repo root'
+        description: 'PNGs uploaded as the updated-goldens artifact, relative to `directory`'
         type: string
         default: '**/goldens/*.png'
       update_goldens:
