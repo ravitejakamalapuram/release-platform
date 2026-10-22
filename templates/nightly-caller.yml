@@ -1,0 +1,43 @@
+# Copy to .github/workflows/nightly.yml in your Flutter app repo.
+# Runs the golden tests and the Android emulator integration tests that PR CI skips, and posts to Slack
+# when either fails on the default branch. The schedule, run-name and dispatch inputs stay in this file
+# because a reusable workflow cannot set them.
+name: nightly
+
+on:
+  schedule:
+    - cron: '37 1 * * *'
+  workflow_dispatch:
+    inputs:
+      update_goldens:
+        description: 'Regenerate golden PNGs on ubuntu-latest and upload them as an artifact'
+        type: boolean
+        default: false
+
+# Name the regeneration run so a release gate can tell it from a full nightly run.
+run-name: ${{ inputs.update_goldens && 'nightly golden regeneration' || 'nightly' }}
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  nightly:
+    permissions:
+      contents: read
+    uses: ravitejakamalapuram/release-platform/.github/workflows/nightly.yml@v2
+    with:
+      app_name: MyApp
+      flutter_version: '3.38.4' # keep in step with release.yaml
+      setup_command: flutter pub get && flutter gen-l10n
+      golden_command: flutter test --tags golden test/golden
+      golden_update_command: flutter test --tags golden --update-goldens test/golden
+      golden_artifact_path: test/golden/**/goldens/*.png
+      update_goldens: ${{ inputs.update_goldens == true }}
+      integration_script: |
+        flutter test integration_test/app_test.dart -d emulator-5554
+    # Optional. Without it a failure is not announced.
+    secrets:
+      slack_webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
