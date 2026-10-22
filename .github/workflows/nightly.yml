@@ -1,0 +1,193 @@
+# Reusable nightly checks for Flutter app repos: the golden tests and the Android emulator integration
+# tests that PR CI skips, plus an optional Slack message when either fails.
+#
+# The caller owns the schedule, `run-name` and the `workflow_dispatch` inputs (a reusable workflow cannot
+# set any of them); see templates/nightly-caller.yml. This workflow owns the toolchain setup, the job
+# layout and the failure notification, so every app runs the nightly the same way.
+#
+# Callers need only:
+#   permissions: { contents: read }
+# The Slack webhook is the one optional secret. It is read by the notify job alone and never by the test jobs.
+name: nightly
+
+on:
+  workflow_call:
+    inputs:
+      app_name:
+        description: 'Name shown in the Slack message'
+        type: string
+        required: true
+      directory:
+        description: 'Directory (inside the caller repo) that holds the Flutter project'
+        type: string
+        default: '.'
+      flutter_version:
+        description: 'Pinned Flutter version; keep it in step with the app''s release.yaml'
+        type: string
+        required: true
+      java_version:
+        description: 'Java for the emulator job'
+        type: string
+        default: '17'
+      setup_command:
+        description: 'Run before the tests in both jobs'
+        type: string
+        default: 'flutter pub get'
+      golden_command:
+        description: 'Golden tests. Empty skips the golden job.'
+        type: string
+        default: 'flutter test --tags golden'
+      golden_update_command:
+        description: 'Regenerates the golden PNGs when update_goldens is true'
+        type: string
+        default: 'flutter test --tags golden --update-goldens'
+      golden_artifact_path:
+        description: 'PNGs uploaded as the updated-goldens artifact, relative to the repo root'
+        type: string
+        default: '**/goldens/*.png'
+      update_goldens:
+        description: 'Regenerate goldens on ubuntu-latest and upload them as an artifact instead of testing. Skips the integration job.'
+        type: boolean
+        default: false
+      integration_script:
+        description: 'Commands run inside the emulator, one per line. Empty skips the integration job.'
+        type: string
+        default: ''
+      emulator_api_level:
+        type: number
+        default: 34
+      emulator_options:
+        description: 'swiftshader_indirect hangs and kills the emulator on the first Impeller frame; swangle_indirect renders the same app.'
+        type: string
+        default: '-no-window -gpu swangle_indirect -noaudio -no-boot-anim -camera-back none'
+      notify_all_refs:
+        description: 'Post to Slack for failures on any branch. Default: only the default branch, so debug runs on fix branches stay quiet.'
+        type: boolean
+        default: false
+    secrets:
+      slack_webhook_url:
+        description: 'Slack incoming webhook; without it a failure is not announced'
+        required: false
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  goldens:
+    name: Golden tests
+    if: ${{ inputs.golden_command != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: ${{ inputs.flutter_version }}
+          channel: stable
+          cache: true
+      - name: Install dependencies
+        working-directory: ${{ inputs.directory }}
+        env:
+          SETUP: ${{ inputs.setup_command }}
+        run: bash -c "$SETUP"
+      # Committed PNGs must be rendered on ubuntu-latest with the pinned Flutter: font rasterisation
+      # differs per OS, so PNGs made on macOS fail here with large diffs.
+      - name: Golden tests
+        if: ${{ !inputs.update_goldens }}
+        working-directory: ${{ inputs.directory }}
+        env:
+          COMMAND: ${{ inputs.golden_command }}
+        run: bash -c "$COMMAND"
+      - name: Regenerate goldens
+        if: ${{ inputs.update_goldens }}
+        working-directory: ${{ inputs.directory }}
+        env:
+          COMMAND: ${{ inputs.golden_update_command }}
+        run: bash -c "$COMMAND"
+      - name: Upload regenerated goldens
+        if: ${{ inputs.update_goldens }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: updated-goldens
+          path: ${{ inputs.directory }}/${{ inputs.golden_artifact_path }}
+          if-no-files-found: error
+          retention-days: 7
+
+  integration:
+    name: Integration tests (Android emulator)
+    if: ${{ inputs.integration_script != '' && !inputs.update_goldens }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.java_version }}
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: ${{ inputs.flutter_version }}
+          channel: stable
+          cache: true
+      - name: Install dependencies
+        working-directory: ${{ inputs.directory }}
+        env:
+          SETUP: ${{ inputs.setup_command }}
+        run: bash -c "$SETUP"
+      - name: Enable KVM for the emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Integration tests
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: ${{ inputs.emulator_api_level }}
+          arch: x86_64
+          target: google_apis
+          emulator-options: ${{ inputs.emulator_options }}
+          disable-animations: true
+          working-directory: ${{ inputs.directory }}
+          script: ${{ inputs.integration_script }}
+
+  # Own job so the webhook secret never reaches the test jobs. Sends only job names and the run URL.
+  notify-failure:
+    name: Notify Slack of Failure
+    needs: [goldens, integration]
+    if: >-
+      ${{ !cancelled()
+      && (needs.goldens.result == 'failure' || needs.integration.result == 'failure')
+      && (inputs.notify_all_refs || github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Notify Slack
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.slack_webhook_url }}
+          APP_NAME: ${{ inputs.app_name }}
+          GOLDENS_RESULT: ${{ needs.goldens.result }}
+          INTEGRATION_RESULT: ${{ needs.integration.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
+            echo "::warning::No slack_webhook_url secret; the nightly failure was not announced."
+            exit 0
+          fi
+          failed=""
+          [ "$GOLDENS_RESULT" = "failure" ] && failed="goldens"
+          [ "$INTEGRATION_RESULT" = "failure" ] && failed="${failed:+$failed, }integration"
+          PAYLOAD=$(jq -n --arg text "❌ *Nightly failed for $APP_NAME*: $failed — $RUN_URL" '{ text: $text }')
+          curl -fsS -o /dev/null -X POST -H 'Content-type: application/json' \
+            --data "$PAYLOAD" "$SLACK_WEBHOOK_URL"

@@ -377,6 +377,23 @@ Keep the manual `release.yml` / `promote.yml` callers for hotfixes and rollbacks
 Not yet built (deliberately): a soak period that widens a staged rollout automatically, and crash-driven
 automatic hotfixes.
 
+## Nightly checks (Flutter)
+
+`nightly.yml` is a reusable workflow for the tests PR CI skips: golden tests and Android emulator
+integration tests. Add it with `templates/nightly-caller.yml` (copy to `.github/workflows/nightly.yml`).
+
+- **The caller keeps** the schedule, `run-name` and the `update_goldens` dispatch input, because a reusable
+  workflow cannot set them. A release gate that reads the latest nightly run therefore keeps working on the
+  caller's own `nightly` workflow.
+- **Goldens:** set `update_goldens: true` to regenerate the PNGs on `ubuntu-latest` and upload them as the
+  `updated-goldens` artifact. Nothing is pushed and the integration job is skipped. Never regenerate goldens
+  on another OS: font rasterisation differs.
+- **Optional jobs:** an empty `golden_command` skips the golden job; an empty `integration_script` skips the
+  emulator job.
+- **Slack:** pass the optional `slack_webhook_url` secret. It reaches only the notify job. A failure is
+  announced only for the default branch, so debug runs on fix branches stay quiet; set `notify_all_refs: true`
+  to announce every branch.
+
 ## Store listings
 
 Keep each store listing (descriptions, screenshots, promo images) in the repo, next to the code.
