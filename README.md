@@ -108,8 +108,9 @@ into shell. When changing a workflow here, keep the table true.
 - **Tag what the stores hold.** `vX.Y.Z` and the GitHub Release are created once every target was
   accepted by its store, or once any store accepted the upload even if a later step failed (a store
   never takes the same version twice, so an untagged one would be picked again). If a publish job
-  fails, fix the cause and use **Re-run failed jobs**: the version is kept, and a Chrome upload the
-  store already holds is submitted without uploading again.
+  fails, fix the cause and use **Re-run failed jobs**: the version is kept. If Chrome already holds
+  the upload, submit the draft in the Developer Dashboard first (the API cannot show a draft's
+  version, so it is never submitted blind); the re-run then sees it in review and finishes.
 - **Preflight checks.** Chrome: refuses early if an item is already in review or the store has an
   equal/higher version. Play: refuses if any track already has an equal/higher versionCode, and
   verifies the uploaded bundle carries the expected versionCode.

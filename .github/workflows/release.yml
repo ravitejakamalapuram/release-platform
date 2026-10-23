@@ -558,7 +558,7 @@ jobs:
         run: |
           args=(release --item "$ITEM" --zip "$(ls dist/*.zip)" --version "$VERSION" --publish-type "$PUBLISH_TYPE")
           if [ "$SUBMIT" != "true" ]; then args+=(--no-publish); fi
-          # A re-run may find this version already uploaded by the earlier attempt: submit it, do not upload again.
+          # On a re-run, a version already in review or published counts as done.
           if [ "$RUN_ATTEMPT" -gt 1 ]; then args+=(--resume); fi
           node platform/scripts/cws.mjs "${args[@]}"
 
@@ -819,5 +819,5 @@ jobs:
       - name: Fail the run if a target failed
         if: contains(needs.*.result, 'failure')
         run: |
-          echo "::error::Tagged, but at least one target failed (see the summary). Fix the cause, for example a Developer Dashboard requirement, then use 'Re-run failed jobs': an upload the store already holds is submitted without uploading again."
+          echo "::error::Tagged, but at least one target failed (see the summary). Fix the cause, for example a Developer Dashboard requirement. If the store already holds the upload, submit it in the Developer Dashboard, then use 'Re-run failed jobs' to finish."
           exit 1

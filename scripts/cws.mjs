@@ -81,9 +81,13 @@ export function preflight(status, version, item) {
   }
 }
 
-/** Versions the store shows as submitted or published. */
-function storeVersions(status) {
-  return [status?.submittedItemRevisionStatus, status?.publishedItemRevisionStatus].flatMap((r) => (r?.distributionChannels ?? []).map((c) => c.crxVersion));
+const NOT_LIVE = new Set(['REJECTED', 'CANCELLED']);
+
+/** Versions the store shows in review or published (not rejected or cancelled). */
+function liveVersions(status) {
+  return [status?.submittedItemRevisionStatus, status?.publishedItemRevisionStatus]
+    .filter((r) => !NOT_LIVE.has(r?.state))
+    .flatMap((r) => (r?.distributionChannels ?? []).map((c) => c.crxVersion));
 }
 
 function channelVersions(rev) {
@@ -132,15 +136,15 @@ export async function publish({ publisher, item, token, fetchImpl, publishType =
  * Full release: preflight -> upload -> publish (optional) -> status.
  * `onUploaded` runs once the store holds this version, before the submit, so the caller can tag it
  * even if the submit fails. With `resume` (a re-run of the same version), a version the store
- * already shows as submitted or published is done, and a "version already uploaded" refusal means
- * an earlier attempt's upload is waiting as a draft: submit that, and report it only once the store
- * shows it is this version.
+ * already shows in review or published is done. A "version already uploaded" refusal is never
+ * submitted automatically: the store does not say which version its draft is, so a person checks
+ * and submits it in the Developer Dashboard.
  */
 export async function release({ publisher, item, token, zip, version, submit = true, resume = false, onUploaded = () => {}, fetchImpl, sleep, pollMs, publishType = 'default' }) {
   const before = await fetchStatus({ publisher, item, token, fetchImpl }).catch((err) => {
     throw explainCwsError(err, item);
   });
-  if (resume && storeVersions(before).includes(version)) {
+  if (resume && liveVersions(before).includes(version)) {
     const uploaded = { uploadState: 'ALREADY_SUBMITTED', crxVersion: version };
     onUploaded(uploaded);
     return { uploaded, published: { state: before.submittedItemRevisionStatus?.state ?? before.publishedItemRevisionStatus?.state }, status: before };
@@ -151,21 +155,17 @@ export async function release({ publisher, item, token, zip, version, submit = t
     uploaded = await upload({ publisher, item, token, zip, fetchImpl, sleep, pollMs });
   } catch (err) {
     if (!(resume && err.versionTaken)) throw err;
-    uploaded = { uploadState: 'ALREADY_UPLOADED', crxVersion: version };
+    throw new StoreError(
+      `Chrome Web Store already holds a draft at or above ${version} for ${item}, most likely uploaded by the earlier attempt. ` +
+        'Check its version in the Developer Dashboard and submit it there, then re-run this job to finish.',
+    );
   }
   if (uploaded.crxVersion && uploaded.crxVersion !== version) {
     throw new StoreError(`Uploaded package reports version ${uploaded.crxVersion}, expected ${version}`);
   }
-  const resumed = uploaded.uploadState === 'ALREADY_UPLOADED';
-  if (!resumed) onUploaded(uploaded);
+  onUploaded(uploaded);
   const published = submit ? await publish({ publisher, item, token, fetchImpl, publishType }) : null;
   const after = await fetchStatus({ publisher, item, token, fetchImpl });
-  if (resumed) {
-    if (!storeVersions(after).includes(version)) {
-      throw new StoreError(`The Chrome Web Store refused ${version} for ${item} and the draft it holds is not ${version} (store: ${channelVersions(after?.submittedItemRevisionStatus) || 'unknown'}). Check the Developer Dashboard.`);
-    }
-    onUploaded(uploaded);
-  }
   return { uploaded, published, status: after };
 }
 
@@ -226,7 +226,7 @@ async function cli() {
   const result = await release({
     publisher, item, token, zip: readFileSync(values.zip), version: values.version, submit, resume: values.resume, publishType: values['publish-type'],
     onUploaded: (u) => {
-      if (u.uploadState === 'ALREADY_UPLOADED') log(`${item} v${values.version} is already uploaded from an earlier attempt; submitting it without uploading again.`);
+      if (u.uploadState === 'ALREADY_SUBMITTED') log(`${item} v${values.version} is already in review or published; nothing to upload.`);
       setOutput('uploaded', 'true');
     },
   });

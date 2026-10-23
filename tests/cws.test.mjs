@@ -137,35 +137,23 @@ test('release reports the upload before a failed submit, so the caller can still
   assert.deepEqual(seen, ['SUCCEEDED']);
 });
 
-test('release with resume submits a draft an earlier attempt already uploaded', async () => {
+test('resume never submits a draft the store refuses to replace; it asks for a manual submit', async () => {
   const f = fakeFetch([
     { body: { publishedItemRevisionStatus: published('1.2.5') } },
     googleError(400, 'Invalid version: the version 1.2.6 has already been uploaded'),
-    { body: { state: 'PENDING_REVIEW' } },
-    { body: { publishedItemRevisionStatus: published('1.2.5'), submittedItemRevisionStatus: published('1.2.6', 'PENDING_REVIEW') } },
   ]);
   const seen = [];
-  const res = await release({ ...base, zip: Buffer.from('z'), version: '1.2.6', resume: true, onUploaded: (u) => seen.push(u.uploadState), fetchImpl: f });
-  assert.equal(res.uploaded.uploadState, 'ALREADY_UPLOADED');
-  assert.equal(res.published.state, 'PENDING_REVIEW');
-  assert.deepEqual(seen, ['ALREADY_UPLOADED']);
+  await assert.rejects(
+    release({ ...base, zip: Buffer.from('z'), version: '1.2.6', resume: true, onUploaded: (u) => seen.push(u), fetchImpl: f }),
+    /already holds a draft at or above 1\.2\.6.*submit it there/,
+  );
+  assert.deepEqual(seen, []);
+  assert.equal(f.remaining(), 0, 'no publish call');
 });
 
 test('without resume, a version the store already holds still fails the release', async () => {
   const f = fakeFetch([{ body: {} }, googleError(400, 'Invalid version: the version 1.2.6 has already been uploaded')]);
   await assert.rejects(release({ ...base, zip: Buffer.from('z'), version: '1.2.6', fetchImpl: f }), /must be higher/);
-});
-
-test('resume fails loudly when the submitted draft is not this version', async () => {
-  const f = fakeFetch([
-    { body: {} },
-    googleError(400, 'Invalid version: must be greater than 1.3.0'),
-    { body: { state: 'PENDING_REVIEW' } },
-    { body: { submittedItemRevisionStatus: published('1.3.0', 'PENDING_REVIEW') } },
-  ]);
-  const seen = [];
-  await assert.rejects(release({ ...base, zip: Buffer.from('z'), version: '1.2.6', resume: true, onUploaded: (u) => seen.push(u), fetchImpl: f }), /is not 1\.2\.6/);
-  assert.deepEqual(seen, [], 'a mismatched draft is never reported as uploaded');
 });
 
 test('resume finishes without another upload when the store already shows this version submitted', async () => {
@@ -175,6 +163,13 @@ test('resume finishes without another upload when the store already shows this v
   assert.equal(res.published.state, 'PENDING_REVIEW');
   assert.deepEqual(seen, ['ALREADY_SUBMITTED']);
   assert.equal(f.calls.length, 1);
+});
+
+test('resume does not treat a rejected submission of this version as done', async () => {
+  const f = fakeFetch([{ body: { submittedItemRevisionStatus: published('1.2.6', 'REJECTED') } }]);
+  const seen = [];
+  await assert.rejects(release({ ...base, zip: Buffer.from('z'), version: '1.2.6', resume: true, onUploaded: (u) => seen.push(u), fetchImpl: f }), /not higher/);
+  assert.deepEqual(seen, []);
 });
 
 test('without resume, a submitted matching version is still refused by preflight', async () => {
