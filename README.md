@@ -105,9 +105,11 @@ into shell. When changing a workflow here, keep the table true.
   and Flutter when an android target sets `flutter`. The same applies to PR checks.
 - **Build everything, then publish.** Every target is built and packaged first; stores are only
   touched once all builds succeeded.
-- **Never burn a tag.** `vX.Y.Z` and the GitHub Release are created only after *every* target
-  was accepted by its store. If a publish job fails, fix the cause and use **Re-run failed jobs**:
-  the version is kept, so the retry uploads the same build.
+- **Tag what the stores hold.** `vX.Y.Z` and the GitHub Release are created once every target was
+  accepted by its store, or once any store accepted the upload even if a later step failed (a store
+  never takes the same version twice, so an untagged one would be picked again). If a publish job
+  fails, fix the cause and use **Re-run failed jobs**: the version is kept, and a Chrome upload the
+  store already holds is submitted without uploading again.
 - **Preflight checks.** Chrome: refuses early if an item is already in review or the store has an
   equal/higher version. Play: refuses if any track already has an equal/higher versionCode, and
   verifies the uploaded bundle carries the expected versionCode.

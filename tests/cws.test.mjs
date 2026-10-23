@@ -125,3 +125,43 @@ test('release with submit=false never resolves publishType (draft upload is unaf
   assert.equal(res.published, null);
   assert.equal(f.calls.length, 3);
 });
+
+test('release reports the upload before a failed submit, so the caller can still tag the version', async () => {
+  const f = fakeFetch([
+    { body: { publishedItemRevisionStatus: published('1.2.5') } },
+    { body: { uploadState: 'SUCCEEDED', crxVersion: '1.2.6' } },
+    googleError(400, 'A justification for offscreen is required.'),
+  ]);
+  const seen = [];
+  await assert.rejects(release({ ...base, zip: Buffer.from('z'), version: '1.2.6', onUploaded: (u) => seen.push(u.uploadState), fetchImpl: f }), /offscreen/);
+  assert.deepEqual(seen, ['SUCCEEDED']);
+});
+
+test('release with resume submits a draft an earlier attempt already uploaded', async () => {
+  const f = fakeFetch([
+    { body: { publishedItemRevisionStatus: published('1.2.5') } },
+    googleError(400, 'Invalid version: the version 1.2.6 has already been uploaded'),
+    { body: { state: 'PENDING_REVIEW' } },
+    { body: { publishedItemRevisionStatus: published('1.2.5'), submittedItemRevisionStatus: published('1.2.6', 'PENDING_REVIEW') } },
+  ]);
+  const seen = [];
+  const res = await release({ ...base, zip: Buffer.from('z'), version: '1.2.6', resume: true, onUploaded: (u) => seen.push(u.uploadState), fetchImpl: f });
+  assert.equal(res.uploaded.uploadState, 'ALREADY_UPLOADED');
+  assert.equal(res.published.state, 'PENDING_REVIEW');
+  assert.deepEqual(seen, ['ALREADY_UPLOADED']);
+});
+
+test('without resume, a version the store already holds still fails the release', async () => {
+  const f = fakeFetch([{ body: {} }, googleError(400, 'Invalid version: the version 1.2.6 has already been uploaded')]);
+  await assert.rejects(release({ ...base, zip: Buffer.from('z'), version: '1.2.6', fetchImpl: f }), /must be higher/);
+});
+
+test('resume fails loudly when the submitted draft is not this version', async () => {
+  const f = fakeFetch([
+    { body: {} },
+    googleError(400, 'Invalid version: must be greater than 1.3.0'),
+    { body: { state: 'PENDING_REVIEW' } },
+    { body: { submittedItemRevisionStatus: published('1.3.0', 'PENDING_REVIEW') } },
+  ]);
+  await assert.rejects(release({ ...base, zip: Buffer.from('z'), version: '1.2.6', resume: true, fetchImpl: f }), /it is not 1\.2\.6/);
+});
