@@ -116,7 +116,8 @@ into shell. When changing a workflow here, keep the table true.
 - **Read back, not trusted.** A 200 from Play is not proof. After every upload, promote, rollout,
   halt or complete, a separate step opens a fresh read-only edit (deleted, never committed) and
   checks that the track holds the intended release (version codes, status, user fraction). On a
-  mismatch the job fails with `RELEASE_MISMATCH` and the differences, and no tag is created.
+  mismatch the job fails with `RELEASE_MISMATCH` and the differences. After a release upload the
+  version is still tagged (the run stays red), because Play has used up that versionCode.
 
 ## Onboarding
 

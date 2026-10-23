@@ -581,7 +581,7 @@ jobs:
             RESULT="dry run: ${RESULT}"
           fi
           if [ "$outcome" = "success" ]; then
-            jq -n --arg k "$KEY" --arg r "$RESULT" '{key:$k, ok:true, result:$r}'
+            jq -n --arg k "$KEY" --arg r "$RESULT" --argjson u "${UPLOADED:-false}" '{key:$k, ok:true, uploaded:$u, result:$r}'
           else
             # uploaded: the store now holds this version, so the tag must record it even though this target failed.
             jq -n --arg k "$KEY" --arg o "${outcome:-not run}" --arg r "$RESULT" --argjson u "${UPLOADED:-false}" '{key:$k, ok:false, uploaded:$u, result:("FAILED (" + $o + ")" + (if $r == "" then "" else ": " + $r end) + " - see job log")}'
@@ -719,7 +719,7 @@ jobs:
             RESULT="dry run: ${RESULT}"
           fi
           if [ "$outcome" = "success" ]; then
-            jq -n --arg k "$KEY" --arg r "$RESULT" '{key:$k, ok:true, result:$r}'
+            jq -n --arg k "$KEY" --arg r "$RESULT" --argjson u "${UPLOADED:-false}" '{key:$k, ok:true, uploaded:$u, result:$r}'
           else
             # uploaded: the store now holds this version, so the tag must record it even though this target failed.
             jq -n --arg k "$KEY" --arg o "${outcome:-not run}" --arg r "$RESULT" --argjson u "${UPLOADED:-false}" '{key:$k, ok:false, uploaded:$u, result:("FAILED (" + $o + ")" + (if $r == "" then "" else ": " + $r end) + " - see job log")}'

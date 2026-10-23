@@ -163,5 +163,21 @@ test('resume fails loudly when the submitted draft is not this version', async (
     { body: { state: 'PENDING_REVIEW' } },
     { body: { submittedItemRevisionStatus: published('1.3.0', 'PENDING_REVIEW') } },
   ]);
-  await assert.rejects(release({ ...base, zip: Buffer.from('z'), version: '1.2.6', resume: true, fetchImpl: f }), /it is not 1\.2\.6/);
+  const seen = [];
+  await assert.rejects(release({ ...base, zip: Buffer.from('z'), version: '1.2.6', resume: true, onUploaded: (u) => seen.push(u), fetchImpl: f }), /is not 1\.2\.6/);
+  assert.deepEqual(seen, [], 'a mismatched draft is never reported as uploaded');
+});
+
+test('resume finishes without another upload when the store already shows this version submitted', async () => {
+  const f = fakeFetch([{ body: { submittedItemRevisionStatus: published('1.2.6', 'PENDING_REVIEW') } }]);
+  const seen = [];
+  const res = await release({ ...base, zip: Buffer.from('z'), version: '1.2.6', resume: true, onUploaded: (u) => seen.push(u.uploadState), fetchImpl: f });
+  assert.equal(res.published.state, 'PENDING_REVIEW');
+  assert.deepEqual(seen, ['ALREADY_SUBMITTED']);
+  assert.equal(f.calls.length, 1);
+});
+
+test('without resume, a submitted matching version is still refused by preflight', async () => {
+  const f = fakeFetch([{ body: { submittedItemRevisionStatus: published('1.2.6', 'PENDING_REVIEW') } }]);
+  await assert.rejects(release({ ...base, zip: Buffer.from('z'), version: '1.2.6', fetchImpl: f }), /in review/);
 });

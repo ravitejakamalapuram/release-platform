@@ -81,6 +81,11 @@ export function preflight(status, version, item) {
   }
 }
 
+/** Versions the store shows as submitted or published. */
+function storeVersions(status) {
+  return [status?.submittedItemRevisionStatus, status?.publishedItemRevisionStatus].flatMap((r) => (r?.distributionChannels ?? []).map((c) => c.crxVersion));
+}
+
 function channelVersions(rev) {
   return (rev?.distributionChannels ?? []).map((c) => `${c.crxVersion} @ ${c.deployPercentage ?? 100}%`).join(', ');
 }
@@ -126,13 +131,20 @@ export async function publish({ publisher, item, token, fetchImpl, publishType =
 /**
  * Full release: preflight -> upload -> publish (optional) -> status.
  * `onUploaded` runs once the store holds this version, before the submit, so the caller can tag it
- * even if the submit fails. With `resume` (a re-run of the same version), a "version already
- * uploaded" refusal means an earlier attempt's upload is waiting as a draft: submit that instead.
+ * even if the submit fails. With `resume` (a re-run of the same version), a version the store
+ * already shows as submitted or published is done, and a "version already uploaded" refusal means
+ * an earlier attempt's upload is waiting as a draft: submit that, and report it only once the store
+ * shows it is this version.
  */
 export async function release({ publisher, item, token, zip, version, submit = true, resume = false, onUploaded = () => {}, fetchImpl, sleep, pollMs, publishType = 'default' }) {
   const before = await fetchStatus({ publisher, item, token, fetchImpl }).catch((err) => {
     throw explainCwsError(err, item);
   });
+  if (resume && storeVersions(before).includes(version)) {
+    const uploaded = { uploadState: 'ALREADY_SUBMITTED', crxVersion: version };
+    onUploaded(uploaded);
+    return { uploaded, published: { state: before.submittedItemRevisionStatus?.state ?? before.publishedItemRevisionStatus?.state }, status: before };
+  }
   preflight(before, version, item);
   let uploaded;
   try {
@@ -144,14 +156,15 @@ export async function release({ publisher, item, token, zip, version, submit = t
   if (uploaded.crxVersion && uploaded.crxVersion !== version) {
     throw new StoreError(`Uploaded package reports version ${uploaded.crxVersion}, expected ${version}`);
   }
-  onUploaded(uploaded);
+  const resumed = uploaded.uploadState === 'ALREADY_UPLOADED';
+  if (!resumed) onUploaded(uploaded);
   const published = submit ? await publish({ publisher, item, token, fetchImpl, publishType }) : null;
   const after = await fetchStatus({ publisher, item, token, fetchImpl });
-  if (uploaded.uploadState === 'ALREADY_UPLOADED' && published) {
-    const live = [after?.submittedItemRevisionStatus, after?.publishedItemRevisionStatus].flatMap((r) => (r?.distributionChannels ?? []).map((c) => c.crxVersion));
-    if (!live.includes(version)) {
-      throw new StoreError(`Submitted the draft waiting on the Chrome Web Store for ${item}, but it is not ${version} (store: ${channelVersions(after?.submittedItemRevisionStatus) || 'unknown'}). Check the Developer Dashboard.`);
+  if (resumed) {
+    if (!storeVersions(after).includes(version)) {
+      throw new StoreError(`The Chrome Web Store refused ${version} for ${item} and the draft it holds is not ${version} (store: ${channelVersions(after?.submittedItemRevisionStatus) || 'unknown'}). Check the Developer Dashboard.`);
     }
+    onUploaded(uploaded);
   }
   return { uploaded, published, status: after };
 }
