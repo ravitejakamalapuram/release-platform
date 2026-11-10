@@ -554,9 +554,12 @@ jobs:
           VERSION: ${{ needs.plan.outputs.version }}
           SUBMIT: ${{ steps.target.outputs.publish }}
           PUBLISH_TYPE: ${{ inputs.publish_type }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           args=(release --item "$ITEM" --zip "$(ls dist/*.zip)" --version "$VERSION" --publish-type "$PUBLISH_TYPE")
           if [ "$SUBMIT" != "true" ]; then args+=(--no-publish); fi
+          # On a re-run, a version already in review or published counts as done.
+          if [ "$RUN_ATTEMPT" -gt 1 ]; then args+=(--resume); fi
           node platform/scripts/cws.mjs "${args[@]}"
 
       - name: Record result
@@ -567,6 +570,7 @@ jobs:
           STORE_PREFLIGHT: ${{ inputs.store_preflight }}
           PREFLIGHT: ${{ steps.preflight.outcome }}
           PUBLISH: ${{ steps.publish.outcome }}
+          UPLOADED: ${{ steps.publish.outputs.uploaded == 'true' }}
           RESULT: ${{ steps.publish.outputs.result || steps.preflight.outputs.result }}
         run: |
           mkdir -p results
@@ -577,9 +581,10 @@ jobs:
             RESULT="dry run: ${RESULT}"
           fi
           if [ "$outcome" = "success" ]; then
-            jq -n --arg k "$KEY" --arg r "$RESULT" '{key:$k, ok:true, result:$r}'
+            jq -n --arg k "$KEY" --arg r "$RESULT" --argjson u "${UPLOADED:-false}" '{key:$k, ok:true, uploaded:$u, result:$r}'
           else
-            jq -n --arg k "$KEY" --arg o "${outcome:-not run}" --arg r "$RESULT" '{key:$k, ok:false, result:("FAILED (" + $o + ")" + (if $r == "" then "" else ": " + $r end) + " - see job log")}'
+            # uploaded: the store now holds this version, so the tag must record it even though this target failed.
+            jq -n --arg k "$KEY" --arg o "${outcome:-not run}" --arg r "$RESULT" --argjson u "${UPLOADED:-false}" '{key:$k, ok:false, uploaded:$u, result:("FAILED (" + $o + ")" + (if $r == "" then "" else ": " + $r end) + " - see job log")}'
           fi > "results/$KEY.json"
 
       - uses: actions/upload-artifact@v7
@@ -696,6 +701,7 @@ jobs:
           PREFLIGHT: ${{ steps.preflight.outcome }}
           PUBLISH: ${{ steps.publish.outcome }}
           VERIFY: ${{ steps.verify.outcome }}
+          UPLOADED: ${{ !inputs.dry_run && steps.publish.outcome == 'success' }}
           RESULT: ${{ steps.publish.outputs.result || steps.preflight.outputs.result }}
           VERIFY_RESULT: ${{ steps.verify.outputs.result }}
         run: |
@@ -713,9 +719,10 @@ jobs:
             RESULT="dry run: ${RESULT}"
           fi
           if [ "$outcome" = "success" ]; then
-            jq -n --arg k "$KEY" --arg r "$RESULT" '{key:$k, ok:true, result:$r}'
+            jq -n --arg k "$KEY" --arg r "$RESULT" --argjson u "${UPLOADED:-false}" '{key:$k, ok:true, uploaded:$u, result:$r}'
           else
-            jq -n --arg k "$KEY" --arg o "${outcome:-not run}" --arg r "$RESULT" '{key:$k, ok:false, result:("FAILED (" + $o + ")" + (if $r == "" then "" else ": " + $r end) + " - see job log")}'
+            # uploaded: the store now holds this version, so the tag must record it even though this target failed.
+            jq -n --arg k "$KEY" --arg o "${outcome:-not run}" --arg r "$RESULT" --argjson u "${UPLOADED:-false}" '{key:$k, ok:false, uploaded:$u, result:("FAILED (" + $o + ")" + (if $r == "" then "" else ": " + $r end) + " - see job log")}'
           fi > "results/$KEY.json"
 
       - uses: actions/upload-artifact@v7
@@ -781,9 +788,15 @@ jobs:
           if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
           node platform/scripts/summary.mjs "${args[@]}"
 
+      # A failed run is tagged only when a store already holds this version: the store refuses the
+      # same version twice, so an untagged one would be picked again by the next run.
       - name: Refuse to tag a partial release
         if: contains(needs.*.result, 'failure')
         run: |
+          if [ "$(find results -name '*.json' -exec cat {} + | jq -s 'any(.[]; .uploaded == true)')" = "true" ]; then
+            echo "::warning::A target failed after a store accepted the upload, so the version is tagged to keep the next run from reusing it."
+            exit 0
+          fi
           echo "::error::At least one target failed, so no tag was created. Fix it and use 'Re-run failed jobs' to retry with the same version."
           exit 1
 
@@ -794,6 +807,17 @@ jobs:
           TAG: ${{ needs.plan.outputs.tag }}
           SHA: ${{ needs.plan.outputs.sha }}
         run: |
-          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$SHA" --title "$TAG" \
-            --notes-file notes/notes.md dist/*
-          echo "Released $TAG at $SHA"
+          # A re-run of a run that already tagged after a failed submit.
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "$TAG already exists (tagged by an earlier attempt of this run)."
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$SHA" --title "$TAG" \
+              --notes-file notes/notes.md dist/*
+            echo "Released $TAG at $SHA"
+          fi
+
+      - name: Fail the run if a target failed
+        if: contains(needs.*.result, 'failure')
+        run: |
+          echo "::error::Tagged, but at least one target failed (see the summary). Fix the cause, for example a Developer Dashboard requirement. If the store already holds the upload, submit it in the Developer Dashboard, then use 'Re-run failed jobs' to finish."
+          exit 1
