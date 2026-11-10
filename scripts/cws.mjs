@@ -44,7 +44,9 @@ export function explainCwsError(err, item) {
     );
   }
   if (/version/i.test(msg) && /(greater|higher|larger|already|must be)/i.test(msg)) {
-    return new StoreError(`Chrome Web Store rejected the manifest version for ${item}: it must be higher than any version uploaded before. Details: ${msg}`);
+    const e = new StoreError(`Chrome Web Store rejected the manifest version for ${item}: it must be higher than any version uploaded before. Details: ${msg}`);
+    e.versionTaken = true;
+    return e;
   }
   if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
     return new StoreError(
@@ -77,6 +79,15 @@ export function preflight(status, version, item) {
         'Create a v* tag at or above the store version (or pass bump: minor/major) and re-run.',
     );
   }
+}
+
+const NOT_LIVE = new Set(['REJECTED', 'CANCELLED']);
+
+/** Versions the store shows in review or published (not rejected or cancelled). */
+function liveVersions(status) {
+  return [status?.submittedItemRevisionStatus, status?.publishedItemRevisionStatus]
+    .filter((r) => !NOT_LIVE.has(r?.state))
+    .flatMap((r) => (r?.distributionChannels ?? []).map((c) => c.crxVersion));
 }
 
 function channelVersions(rev) {
@@ -121,16 +132,38 @@ export async function publish({ publisher, item, token, fetchImpl, publishType =
   return res;
 }
 
-/** Full release: preflight -> upload -> publish (optional) -> status. */
-export async function release({ publisher, item, token, zip, version, submit = true, fetchImpl, sleep, pollMs, publishType = 'default' }) {
+/**
+ * Full release: preflight -> upload -> publish (optional) -> status.
+ * `onUploaded` runs once the store holds this version, before the submit, so the caller can tag it
+ * even if the submit fails. With `resume` (a re-run of the same version), a version the store
+ * already shows in review or published is done. A "version already uploaded" refusal is never
+ * submitted automatically: the store does not say which version its draft is, so a person checks
+ * and submits it in the Developer Dashboard.
+ */
+export async function release({ publisher, item, token, zip, version, submit = true, resume = false, onUploaded = () => {}, fetchImpl, sleep, pollMs, publishType = 'default' }) {
   const before = await fetchStatus({ publisher, item, token, fetchImpl }).catch((err) => {
     throw explainCwsError(err, item);
   });
+  if (resume && liveVersions(before).includes(version)) {
+    const uploaded = { uploadState: 'ALREADY_SUBMITTED', crxVersion: version };
+    onUploaded(uploaded);
+    return { uploaded, published: { state: before.submittedItemRevisionStatus?.state ?? before.publishedItemRevisionStatus?.state }, status: before };
+  }
   preflight(before, version, item);
-  const uploaded = await upload({ publisher, item, token, zip, fetchImpl, sleep, pollMs });
+  let uploaded;
+  try {
+    uploaded = await upload({ publisher, item, token, zip, fetchImpl, sleep, pollMs });
+  } catch (err) {
+    if (!(resume && err.versionTaken)) throw err;
+    throw new StoreError(
+      `Chrome Web Store already holds a draft at or above ${version} for ${item}, most likely uploaded by the earlier attempt. ` +
+        'Check its version in the Developer Dashboard and submit it there, then re-run this job to finish.',
+    );
+  }
   if (uploaded.crxVersion && uploaded.crxVersion !== version) {
     throw new StoreError(`Uploaded package reports version ${uploaded.crxVersion}, expected ${version}`);
   }
+  onUploaded(uploaded);
   const published = submit ? await publish({ publisher, item, token, fetchImpl, publishType }) : null;
   const after = await fetchStatus({ publisher, item, token, fetchImpl });
   return { uploaded, published, status: after };
@@ -159,6 +192,7 @@ async function cli() {
       version: { type: 'string' },
       'no-publish': { type: 'boolean', default: false },
       'publish-type': { type: 'string', default: 'default' },
+      resume: { type: 'boolean', default: false },
     },
   });
   const publisher = values.publisher ?? process.env.CWS_PUBLISHER_ID;
@@ -189,7 +223,13 @@ async function cli() {
   if (!values.zip || !values.version) throw new Error('--zip and --version are required for release');
 
   const submit = !values['no-publish'];
-  const result = await release({ publisher, item, token, zip: readFileSync(values.zip), version: values.version, submit, publishType: values['publish-type'] });
+  const result = await release({
+    publisher, item, token, zip: readFileSync(values.zip), version: values.version, submit, resume: values.resume, publishType: values['publish-type'],
+    onUploaded: (u) => {
+      if (u.uploadState === 'ALREADY_SUBMITTED') log(`${item} v${values.version} is already in review or published; nothing to upload.`);
+      setOutput('uploaded', 'true');
+    },
+  });
   const d = describeStatus(result.status);
   log(`Uploaded ${item} v${result.uploaded.crxVersion ?? values.version}: ${result.uploaded.uploadState}`);
   if (result.published) log(`Submitted for review: ${result.published.state}`);
