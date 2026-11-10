@@ -14,11 +14,12 @@ const addDays = (d, n) => new Date(d.getTime() + n * 864e5);
 export function parsePlayCsv(buf) {
   const text = (Buffer.isBuffer(buf) ? buf.toString('utf16le') : String(buf)).replace(/^﻿/, '');
   const [head, ...lines] = text.split(/\r?\n/).filter(Boolean);
-  const cols = head.split(',');
+  const split = (l) => l.match(/("([^"]|"")*"|[^,]*)(,|$)/g).slice(0, -1).map((c) => c.replace(/,$/, '').replace(/^"|"$/g, '').replace(/""/g, '"'));
+  const cols = split(head).map((c) => c.trim());
   const i = (n) => cols.indexOf(n);
   const [d, a, b] = [i('Date'), i('Daily User Installs'), i('Daily User Uninstalls')];
   if (d < 0 || a < 0 || b < 0) throw new Error('Play stats CSV has unexpected columns');
-  return lines.map((l) => l.split(',')).map((r) => ({ date: r[d], installs: +r[a] || 0, uninstalls: +r[b] || 0 }));
+  return lines.map(split).map((r) => ({ date: r[d], installs: +r[a] || 0, uninstalls: +r[b] || 0 }));
 }
 
 export function sumWindow(rows, from, to) {
@@ -43,8 +44,11 @@ async function gaProperties(token) {
   const out = {};
   let pageToken = '';
   do {
-    const r = await request({ url: `https://analyticsadmin.googleapis.com/v1beta/accountSummaries?pageSize=200${pageToken ? `&pageToken=${pageToken}` : ''}`, token });
-    for (const a of r.accountSummaries ?? []) for (const p of a.propertySummaries ?? []) out[p.displayName] = p.property.split('/')[1];
+    const r = await request({ url: `https://analyticsadmin.googleapis.com/v1beta/accountSummaries?pageSize=200${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ''}`, token });
+    for (const a of r.accountSummaries ?? []) for (const p of a.propertySummaries ?? []) {
+      const id = p.property.split('/')[1];
+      out[p.displayName] = p.displayName in out && out[p.displayName] !== id ? null : id; // null = ambiguous name
+    }
     pageToken = r.nextPageToken ?? '';
   } while (pageToken);
   return out;
@@ -70,7 +74,7 @@ async function ga(id, token, t) {
 
 export async function collect(cfg, { gaToken, playToken, today = new Date() }) {
   const props = await gaProperties(gaToken);
-  const months = [...new Set([-60, -30, -1].map((n) => day(addDays(today, n)).slice(0, 7).replace('-', '')))];
+  const months = [...new Set(Array.from({ length: 60 }, (_, k) => day(addDays(today, -60 + k)).slice(0, 7).replace('-', '')))];
   const apps = [];
   for (const a of cfg.apps) {
     const entry = { name: a.name, platform: a.platform, id: a.play ?? a.ga, play: null, ga: null };
@@ -82,10 +86,11 @@ export async function collect(cfg, { gaToken, playToken, today = new Date() }) {
         entry.play = cur && { ...cur, prevInstalls: prev?.installs ?? null, prevUninstalls: prev?.uninstalls ?? null };
       }
     } catch (e) { warning(`${a.name}: ${e.message}`); }
-    try {
-      entry.ga = props[a.ga] ? await ga(props[a.ga], gaToken, today) : null;
-      if (!props[a.ga]) warning(`${a.name}: GA4 property "${a.ga}" not visible to the service account`);
-    } catch (e) { warning(`${a.name}: GA4 failed (${e.status ?? e.message})`); }
+    if (!props[a.ga]) {
+      warning(`${a.name}: GA4 property "${a.ga}" ${a.ga in props ? 'matches more than one property' : 'is not visible to the service account'}`);
+    } else {
+      try { entry.ga = await ga(props[a.ga], gaToken, today); } catch (e) { warning(`${a.name}: GA4 failed (${e.status ?? e.message})`); }
+    }
     apps.push(entry);
   }
   return { generated: today.toISOString(), apps };
