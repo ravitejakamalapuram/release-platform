@@ -70,6 +70,7 @@ export function normalizeTarget(target, index) {
     release_status: target.release_status ?? 'completed',
     release_notes: target.release_notes ?? '',
     signing: { ...DEFAULT_SIGNING, ...(target.signing ?? {}) },
+    symbols: target.symbols ? { ...target.symbols, dir: target.symbols.dir.replace(/\/+$/, '') } : null,
     listing: target.listing ?? '',
   };
 }

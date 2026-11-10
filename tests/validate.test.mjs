@@ -45,6 +45,18 @@ test('rejects bad configs with a pointed message', () => {
   invalid({ app: 'x', extra: 1, targets: [chrome] }, /unknown property "extra"/);
 });
 
+test('android.symbols: optional, validated, default off', () => {
+  const symbols = { dir: 'build/symbols', crashlytics_app_id_secret: 'FIREBASE_APP_ID' };
+  checkConfig({ app: 'x', targets: [{ ...android, symbols }] });
+  invalid({ app: 'x', targets: [{ ...android, symbols: { dir: 'build/symbols' } }] }, /missing required property "crashlytics_app_id_secret"/);
+  invalid({ app: 'x', targets: [{ ...android, symbols: { crashlytics_app_id_secret: 'FIREBASE_APP_ID' } }] }, /missing required property "dir"/);
+  invalid({ app: 'x', targets: [{ ...android, symbols: { ...symbols, dir: '../out' } }] }, /symbols\.dir: must match/);
+  invalid({ app: 'x', targets: [{ ...android, symbols: { ...symbols, crashlytics_app_id_secret: 'has-dash' } }] }, /secret name/);
+  invalid({ app: 'x', targets: [{ ...android, symbols: { ...symbols, obfuscate: true } }] }, /unknown property "obfuscate"/);
+  assert.equal(normalizeTarget(android, 0).symbols, null);
+  assert.deepEqual(normalizeTarget({ ...android, symbols: { ...symbols, dir: 'build/symbols/' } }, 0).symbols, symbols);
+});
+
 test('normalizeTarget fills defaults', () => {
   assert.deepEqual(normalizeTarget({ ...chrome, path: 'extension/' }, 0), {
     key: 'chrome-0', type: 'chrome', item_id: chrome.item_id, path: 'extension', build: '', node: '22', include: [], publish: true, listing: '',
