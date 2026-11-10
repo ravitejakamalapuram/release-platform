@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Daily app performance snapshot (replaces the Supermetrics-backed hub).
 //   GA_TOKEN=... PLAY_TOKEN=... node scripts/performance.mjs --config performance.json --out performance.json.out
-// GA4: Analytics Data API. Play: the monthly stats CSVs Play Console writes to a Cloud Storage bucket.
+// GA4: Analytics Data API (property IDs in performance.json). Play: the monthly stats CSVs Play Console writes to a Cloud Storage bucket.
 // Nothing is estimated: a source that returns nothing gives null.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { request } from './lib/http.mjs';
@@ -40,20 +40,6 @@ async function playRows(bucket, pkg, token, months) {
   return rows;
 }
 
-async function gaProperties(token) {
-  const out = {};
-  let pageToken = '';
-  do {
-    const r = await request({ url: `https://analyticsadmin.googleapis.com/v1beta/accountSummaries?pageSize=200${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ''}`, token });
-    for (const a of r.accountSummaries ?? []) for (const p of a.propertySummaries ?? []) {
-      const id = p.property.split('/')[1];
-      out[p.displayName] = p.displayName in out && out[p.displayName] !== id ? null : id; // null = ambiguous name
-    }
-    pageToken = r.nextPageToken ?? '';
-  } while (pageToken);
-  return out;
-}
-
 async function gaReport(id, token, body) {
   const r = await request({ method: 'POST', url: `https://analyticsdata.googleapis.com/v1beta/properties/${id}:runReport`, token, json: body });
   const v = r.rows?.[0]?.metricValues;
@@ -73,8 +59,6 @@ async function ga(id, token, t) {
 }
 
 export async function collect(cfg, { gaToken, playToken, today = new Date() }) {
-  let props = {};
-  try { props = await gaProperties(gaToken); } catch (e) { warning(`GA4 property list failed (${e.status ?? e.message})`); }
   const months = [...new Set(Array.from({ length: 60 }, (_, k) => day(addDays(today, -60 + k)).slice(0, 7).replace('-', '')))];
   const apps = [];
   for (const a of cfg.apps) {
@@ -87,10 +71,8 @@ export async function collect(cfg, { gaToken, playToken, today = new Date() }) {
         entry.play = cur && { ...cur, prevInstalls: prev?.installs ?? null, prevUninstalls: prev?.uninstalls ?? null };
       }
     } catch (e) { warning(`${a.name}: ${e.message}`); }
-    if (!props[a.ga]) {
-      warning(`${a.name}: GA4 property "${a.ga}" ${a.ga in props ? 'matches more than one property' : 'is not visible to the service account'}`);
-    } else {
-      try { entry.ga = await ga(props[a.ga], gaToken, today); } catch (e) { warning(`${a.name}: GA4 failed (${e.status ?? e.message})`); }
+    if (a.ga) {
+      try { entry.ga = await ga(a.ga, gaToken, today); } catch (e) { warning(`${a.name}: GA4 failed (${e.status ?? e.message})`); }
     }
     apps.push(entry);
   }
