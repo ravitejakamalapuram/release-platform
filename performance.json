@@ -1,11 +1,33 @@
 {
   "playBucket": "pubsite_prod_7973294363672526163",
   "apps": [
-    { "name": "InvTrack", "platform": "Android", "play": "com.invtracker.inv_tracker", "ga": "invtracker-b19d1" },
-    { "name": "TelePort", "platform": "Android", "play": "com.carfry369.teleport", "ga": "teleport-497306" },
-    { "name": "EchoKit", "platform": "Chrome", "ga": "jndhbmaokpclbpjoogffaimahadpidcf" },
-    { "name": "Session Transfer", "platform": "Chrome", "ga": "fnfmlchbfofjdfeibgdkcibfjjlfcefc" },
-    { "name": "JSON Workbench", "platform": "Chrome", "ga": "higmlhleblpmdogjccpmjlnilpmhohal" },
-    { "name": "Telugu New Tab Calendar", "platform": "Chrome", "ga": "obgpdlhkahmdiepklldjnnmfmbhmgenn" }
+    {
+      "name": "InvTrack",
+      "platform": "Android",
+      "play": "com.invtracker.inv_tracker",
+      "ga": "515196141"
+    },
+    {
+      "name": "TelePort",
+      "platform": "Android",
+      "play": "com.carfry369.teleport",
+      "ga": "538754232"
+    },
+    {
+      "name": "EchoKit",
+      "platform": "Chrome"
+    },
+    {
+      "name": "Session Transfer",
+      "platform": "Chrome"
+    },
+    {
+      "name": "JSON Workbench",
+      "platform": "Chrome"
+    },
+    {
+      "name": "Telugu New Tab Calendar",
+      "platform": "Chrome"
+    }
   ]
 }
