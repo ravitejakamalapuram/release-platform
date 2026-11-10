@@ -73,7 +73,8 @@ async function ga(id, token, t) {
 }
 
 export async function collect(cfg, { gaToken, playToken, today = new Date() }) {
-  const props = await gaProperties(gaToken);
+  let props = {};
+  try { props = await gaProperties(gaToken); } catch (e) { warning(`GA4 property list failed (${e.status ?? e.message})`); }
   const months = [...new Set(Array.from({ length: 60 }, (_, k) => day(addDays(today, -60 + k)).slice(0, 7).replace('-', '')))];
   const apps = [];
   for (const a of cfg.apps) {
