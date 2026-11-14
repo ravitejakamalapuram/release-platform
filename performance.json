@@ -1,0 +1,71 @@
+{
+ "generated": "2026-11-14T07:46:38.630Z",
+ "apps": [
+  {
+   "name": "InvTrack",
+   "platform": "Android",
+   "id": "com.invtracker.inv_tracker",
+   "play": {
+    "installs": 15,
+    "uninstalls": 13,
+    "prevInstalls": 19,
+    "prevUninstalls": 15
+   },
+   "ga": {
+    "active": 204,
+    "new": 189,
+    "prevActive": 152,
+    "prevNew": 131,
+    "active7": 75,
+    "active28": 202,
+    "prevActive7": 76,
+    "prevActive28": 152
+   }
+  },
+  {
+   "name": "TelePort",
+   "platform": "Android",
+   "id": "com.carfry369.teleport",
+   "play": {
+    "installs": 8,
+    "uninstalls": 7,
+    "prevInstalls": 12,
+    "prevUninstalls": 13
+   },
+   "ga": {
+    "active": 9,
+    "new": 7,
+    "prevActive": 19,
+    "prevNew": 15,
+    "active7": 1,
+    "active28": 9,
+    "prevActive7": 2,
+    "prevActive28": 18
+   }
+  },
+  {
+   "name": "EchoKit",
+   "platform": "Chrome",
+   "play": null,
+   "ga": null
+  },
+  {
+   "name": "Session Transfer",
+   "platform": "Chrome",
+   "play": null,
+   "ga": null
+  },
+  {
+   "name": "JSON Workbench",
+   "platform": "Chrome",
+   "play": null,
+   "ga": null
+  },
+  {
+   "name": "Telugu New Tab Calendar",
+   "platform": "Chrome",
+   "play": null,
+   "ga": null
+  }
+ ]
+}
