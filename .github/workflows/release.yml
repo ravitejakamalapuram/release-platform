@@ -487,11 +487,20 @@ jobs:
             exit 1
           fi
 
+      # upload-artifact rejects '.' segments, and the default directory is '.', so normalise the path first.
+      - name: Resolve Dart symbols path
+        id: symbols_path
+        if: ${{ steps.target.outputs.symbols_dir != '' }}
+        env:
+          DIRECTORY: ${{ inputs.directory }}
+          SYMBOLS_DIR: ${{ steps.target.outputs.symbols_dir }}
+        run: echo "path=$(realpath -m --relative-to="$GITHUB_WORKSPACE" "app/$DIRECTORY/$SYMBOLS_DIR")" >> "$GITHUB_OUTPUT"
+
       - uses: actions/upload-artifact@v7
         if: ${{ steps.target.outputs.symbols_dir != '' }}
         with:
           name: symbols-${{ needs.plan.outputs.app }}-${{ needs.plan.outputs.version }}-${{ steps.target.outputs.package }}
-          path: app/${{ inputs.directory }}/${{ steps.target.outputs.symbols_dir }}
+          path: ${{ steps.symbols_path.outputs.path }}
           if-no-files-found: error
 
       - uses: actions/upload-artifact@v7
