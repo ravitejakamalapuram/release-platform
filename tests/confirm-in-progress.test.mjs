@@ -31,3 +31,9 @@ test('includeHalted accepts the highest in-progress or halted release, whatever 
   assert.match(diffInProgress({ track: 'production', versionCodes: ['120'], includeHalted: true }, both)[0], /is \[121\], expected \[120\]/);
   assert.match(diffInProgress(opts, tracks([{ versionCodes: ['121'], status: 'completed' }]))[0], /no in-progress release/);
 });
+
+test('includeHalted follows the highest version code, not the status order', () => {
+  const t = tracks([{ versionCodes: ['120'], status: 'inProgress' }, { versionCodes: ['121'], status: 'halted' }]);
+  assert.deepEqual(diffInProgress({ track: 'production', versionCodes: ['121'], includeHalted: true }, t), []);
+  assert.match(diffInProgress({ track: 'production', versionCodes: ['120'], includeHalted: true }, t)[0], /is \[121\], expected \[120\]/);
+});
