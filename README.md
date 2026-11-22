@@ -328,6 +328,15 @@ Run the app's **promote** workflow ([template](templates/promote-caller.yml)). I
 
 The package defaults to the first android target in `release.yaml`.
 
+**Crash-free gate.** Pass `min_crash_free_users` (e.g. `99.5`) with `rollout` or `complete` and the
+job reads crash-free users for the in-progress (or halted) release from the Play Developer
+Reporting API before it changes anything ([`scripts/crash-free.mjs`](scripts/crash-free.mjs)). The
+figure is Android vitals' daily crash rate for those version codes over the last 7 days of data
+Play has published (about a day behind), weighted by each day's users. It refuses when there is
+no data or fewer than `min_crash_free_user_days` (default 100) user-days, and never treats
+missing data as crash-free. Vitals counts process crashes, so a Dart error that Crashlytics logs
+as fatal but that leaves the app running is not in it.
+
 **The app repo needs a `production` environment with required reviewers.** `promote.yml` runs
 its Play job in that environment; if the environment does not exist, GitHub creates an empty one
 on first use, with **no** protection, so the promotion would run unapproved. Create it up front,
@@ -638,7 +647,8 @@ Recorded for reference; nothing here needs to be repeated for new apps.
 
 **Google Cloud project `rk-release-platform` (number `335964689163`)**, billing not required.
 
-- APIs enabled: `iamcredentials`, `sts`, `iam`, `chromewebstore`, `androidpublisher`.
+- APIs enabled: `iamcredentials`, `sts`, `iam`, `chromewebstore`, `androidpublisher`,
+  `playdeveloperreporting` (crash-free gate).
 - Workload Identity pool `github`, OIDC provider `github-oidc`
   (issuer `https://token.actions.githubusercontent.com`):
   - attribute mapping: `google.subject=assertion.sub`, `attribute.repository=assertion.repository`,
@@ -661,7 +671,7 @@ Dashboard → Account, `release-bot@…` is set as the publisher's service accou
 live under this publisher.
 
 **Google Play.** `release-bot@…` is invited under Users and permissions with release permissions
-for each app.
+and **View app information** for each app (the crash-free gate reads Android vitals).
 
 There is intentionally **no Secret Manager** (billing is closed); Android upload keys are the only
 secrets and live in each app repo.
@@ -678,7 +688,7 @@ Layout:
 
 ```
 .github/workflows/  release.yml promote.yml status.yml app-ci.yml store-screenshots.yml crash-issues.yml (reusable) · review-queue.yml · dashboard.yml ci.yml move-major-tag.yml (this repo)
-scripts/            review-queue.mjs crash-issues.mjs cws.mjs play.mjs version.mjs validate.mjs package-chrome.mjs changelog.mjs status.mjs summary.mjs
+scripts/            review-queue.mjs crash-issues.mjs crash-free.mjs cws.mjs play.mjs version.mjs validate.mjs package-chrome.mjs changelog.mjs status.mjs summary.mjs
 scripts/lib/        http.mjs (Google API client) gha.mjs (runner helpers) schema.mjs (tiny JSON Schema validator)
 schema/             release.schema.json
 templates/          caller workflows to copy into app repos
