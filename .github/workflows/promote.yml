@@ -205,14 +205,14 @@ jobs:
 
       # The release that was checked must still be the in-progress one right before the write. Narrows,
       # but does not close, the window in which someone else changes the track (Play has no precondition).
-      - name: Confirm the checked release is still in progress
+      - name: Confirm the checked release is still the one to change
         if: ${{ inputs.min_crash_free_users != '' }}
         env:
           GOOGLE_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
           PACKAGE: ${{ needs.config.outputs.package }}
           TO: ${{ inputs.to_track }}
           CHECKED: ${{ steps.crashfree.outputs.version_codes }}
-        run: node platform/scripts/play.mjs confirm-in-progress --package "$PACKAGE" --track "$TO" --version-codes "$CHECKED"
+        run: node platform/scripts/play.mjs confirm-in-progress --package "$PACKAGE" --track "$TO" --version-codes "$CHECKED" --include-halted
 
       - name: ${{ inputs.action }}
         id: play
