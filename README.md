@@ -336,6 +336,7 @@ Play has published (about a day behind), weighted by each day's users. It refuse
 no data or fewer than `min_crash_free_user_days` (default 100) user-days, and never treats
 missing data as crash-free. Vitals counts process crashes, so a Dart error that Crashlytics logs
 as fatal but that leaves the app running is not in it.
+Right before the write, the job re-reads the track and refuses if the checked release is no longer the one it would change. Play's edits API has no precondition, so a change made in Play Console in the last few seconds can still slip through; promotions through this workflow are serialized by its concurrency group.
 
 **The app repo needs a `production` environment with required reviewers.** `promote.yml` runs
 its Play job in that environment; if the environment does not exist, GitHub creates an empty one
