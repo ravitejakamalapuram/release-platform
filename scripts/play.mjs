@@ -394,11 +394,14 @@ export async function verifyTrack({ pkg, token, fetchImpl, track, versionCodes, 
  * [track], whatever the fraction. A promotion that counts a soak from a recorded rollout start uses
  * it to confirm that the record still describes what Play serves. Returns one line per difference.
  */
-export function diffInProgress({ track, versionCodes }, tracks) {
+export function diffInProgress({ track, versionCodes, includeHalted = false }, tracks) {
   const want = [...versionCodes].map(String).sort();
   const t = (tracks ?? []).find((x) => x.track === track);
   const seen = t ? describeTracks([t])[0] ?? `${track}: (no releases)` : `${track}: (track not found)`;
-  const rel = (t?.releases ?? []).find((r) => r.status === 'inProgress');
+  // With includeHalted: the highest in-progress or halted release, the one changeRollout writes.
+  const rel = includeHalted
+    ? latestRelease(t, ['inProgress', 'halted'])
+    : (t?.releases ?? []).find((r) => r.status === 'inProgress');
   if (!rel) return [`${track}: no in-progress release (Play has ${seen})`];
   const have = (rel.versionCodes ?? []).map(String).sort();
   if (have.length !== want.length || !have.every((c, i) => c === want[i])) {
@@ -407,9 +410,9 @@ export function diffInProgress({ track, versionCodes }, tracks) {
   return [];
 }
 
-export async function confirmInProgress({ pkg, token, fetchImpl, track, versionCodes }) {
+export async function confirmInProgress({ pkg, token, fetchImpl, track, versionCodes, includeHalted = false }) {
   if (!track || !versionCodes?.length) throw new Error('confirmInProgress needs track and versionCodes');
-  const mismatches = diffInProgress({ track, versionCodes }, await listTracks({ pkg, token, fetchImpl }));
+  const mismatches = diffInProgress({ track, versionCodes, includeHalted }, await listTracks({ pkg, token, fetchImpl }));
   return { ok: mismatches.length === 0, mismatches };
 }
 
@@ -451,6 +454,7 @@ async function cli() {
       'notes-file': { type: 'string' },
       bundle: { type: 'string' },
       'version-codes': { type: 'string' },
+      'include-halted': { type: 'boolean' },
       out: { type: 'string' },
       'dry-run': { type: 'boolean', default: false },
       status: { type: 'string', default: 'completed' },
@@ -543,7 +547,7 @@ async function cli() {
     case 'confirm-in-progress': {
       if (!values.track || !values['version-codes']) throw new Error('--track and --version-codes are required');
       const versionCodes = values['version-codes'].split(',').map((c) => c.trim()).filter(Boolean);
-      const { ok, mismatches } = await confirmInProgress({ pkg, token, track: values.track, versionCodes });
+      const { ok, mismatches } = await confirmInProgress({ pkg, token, track: values.track, versionCodes, includeHalted: values['include-halted'] });
       if (!ok) {
         for (const m of mismatches) log(`  ${m}`);
         setOutput('result', `ROLLOUT_NOT_CONFIRMED: ${pkg} ${values.track} [${versionCodes.join(', ')}]`);

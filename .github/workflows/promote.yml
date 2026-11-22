@@ -37,6 +37,14 @@ on:
         description: 'Comma-separated version codes the caller counted a soak for. Only for rollout and complete, which act on the in-progress release of to_track: they run only if Play holds exactly these there (read-only check before any write). Other actions fail when it is set.'
         type: string
         default: ''
+      min_crash_free_users:
+        description: 'Only for rollout and complete. When set (e.g. 99.5), the in-progress or halted release of to_track must have at least this % crash-free users in Play vitals over the last 7 days (scripts/crash-free.mjs), read before any write. Missing or thin data refuses.'
+        type: string
+        default: ''
+      min_crash_free_user_days:
+        description: 'Fewest user-days of Play crash data that count for min_crash_free_users.'
+        type: string
+        default: '100'
       platform_ref:
         description: 'Advanced: release-platform ref for the helper scripts. Default: the ref this workflow was called at.'
         type: string
@@ -165,6 +173,55 @@ jobs:
             echo "::error::expect_in_progress_version_codes is only valid for rollout and complete (got '$ACTION')"; exit 1 ;;
           esac
           node platform/scripts/play.mjs confirm-in-progress --package "$PACKAGE" --track "$TO" --version-codes "$EXPECTED"
+
+      # InvTrack #848: the crash-free figure comes from Play, not from a number someone typed in.
+      - name: Authenticate to Google for crash data (keyless)
+        id: auth_reporting
+        if: ${{ inputs.min_crash_free_users != '' }}
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.SERVICE_ACCOUNT }}
+          token_format: access_token
+          access_token_scopes: https://www.googleapis.com/auth/playdeveloperreporting
+          create_credentials_file: false
+
+      - name: Check crash-free users on Play
+        id: crashfree
+        if: ${{ inputs.min_crash_free_users != '' }}
+        env:
+          PLAY_TOKEN: ${{ steps.auth.outputs.access_token }}
+          REPORTING_TOKEN: ${{ steps.auth_reporting.outputs.access_token }}
+          ACTION: ${{ inputs.action }}
+          PACKAGE: ${{ needs.config.outputs.package }}
+          TO: ${{ inputs.to_track }}
+          MIN: ${{ inputs.min_crash_free_users }}
+          MIN_USER_DAYS: ${{ inputs.min_crash_free_user_days }}
+        run: |
+          case "$ACTION" in rollout|complete) ;; *)
+            echo "::error::min_crash_free_users is only valid for rollout and complete (got '$ACTION')"; exit 1 ;;
+          esac
+          node platform/scripts/crash-free.mjs --package "$PACKAGE" --track "$TO" --min "$MIN" --min-users "$MIN_USER_DAYS"
+
+      # The release that was checked must still be the in-progress one right before the write. Narrows,
+      # but does not close, the window in which someone else changes the track (Play has no precondition).
+      - name: Confirm the checked release is still the one to change
+        if: ${{ inputs.min_crash_free_users != '' }}
+        env:
+          GOOGLE_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          PACKAGE: ${{ needs.config.outputs.package }}
+          TO: ${{ inputs.to_track }}
+          CHECKED: ${{ steps.crashfree.outputs.version_codes }}
+          EXPECTED: ${{ inputs.expect_in_progress_version_codes }}
+        run: |
+          # With a soak confirmation too, the crash-checked release must be the soaked one.
+          if [ -n "$EXPECTED" ]; then
+            norm() { printf '%s' "$1" | tr ',' '\n' | tr -d ' ' | sort | paste -sd, -; }
+            if [ "$(norm "$EXPECTED")" != "$(norm "$CHECKED")" ]; then
+              echo "::error::The release checked for crash-free users ($CHECKED) is not the one that soaked ($EXPECTED); nothing was changed."; exit 1
+            fi
+          fi
+          node platform/scripts/play.mjs confirm-in-progress --package "$PACKAGE" --track "$TO" --version-codes "$CHECKED" --include-halted
 
       - name: ${{ inputs.action }}
         id: play
