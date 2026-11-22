@@ -212,7 +212,16 @@ jobs:
           PACKAGE: ${{ needs.config.outputs.package }}
           TO: ${{ inputs.to_track }}
           CHECKED: ${{ steps.crashfree.outputs.version_codes }}
-        run: node platform/scripts/play.mjs confirm-in-progress --package "$PACKAGE" --track "$TO" --version-codes "$CHECKED" --include-halted
+          EXPECTED: ${{ inputs.expect_in_progress_version_codes }}
+        run: |
+          # With a soak confirmation too, the crash-checked release must be the soaked one.
+          if [ -n "$EXPECTED" ]; then
+            norm() { printf '%s' "$1" | tr ',' '\n' | tr -d ' ' | sort | paste -sd, -; }
+            if [ "$(norm "$EXPECTED")" != "$(norm "$CHECKED")" ]; then
+              echo "::error::The release checked for crash-free users ($CHECKED) is not the one that soaked ($EXPECTED); nothing was changed."; exit 1
+            fi
+          fi
+          node platform/scripts/play.mjs confirm-in-progress --package "$PACKAGE" --track "$TO" --version-codes "$CHECKED" --include-halted
 
       - name: ${{ inputs.action }}
         id: play
