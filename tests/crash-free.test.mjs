@@ -34,9 +34,10 @@ test('weights daily crash rates by users, keeps only the asked version codes, fo
   ]);
   const r = await crashFreeUsers({ pkg: PKG, token: 't', versionCodes: ['101'], fetchImpl: f });
   // crashed users 0.01*100 + 0*300 = 1 of 400 user-days
-  assert.equal(r.userDays, 400);
-  assert.equal(r.days, 2);
-  assert.ok(Math.abs(r.percent - 99.75) < 1e-9);
+  assert.equal(r.byCode.length, 1);
+  assert.equal(r.byCode[0].userDays, 400);
+  assert.equal(r.byCode[0].days, 2);
+  assert.ok(Math.abs(r.byCode[0].percent - 99.75) < 1e-9);
   assert.equal(f.remaining(), 0);
 });
 
@@ -67,11 +68,28 @@ test('a disabled Reporting API explains the fix', async () => {
   await assert.rejects(crashFreeUsers({ pkg: PKG, token: 't', versionCodes: ['101'], fetchImpl: f }), /playdeveloperreporting\.googleapis\.com/);
 });
 
-test('the release under check is the in-progress or halted one', () => {
+test('every version code must pass on its own; a healthy one cannot hide a missing or bad one', async () => {
+  const two = (rows) => checkCrashFree({
+    pkg: PKG, token: 't', versionCodes: ['101', '102'], min: 99.5, minUsers: 100,
+    fetchImpl: fakeFetch([freshness, rows]),
+  });
+  await assert.rejects(two(rows([row(101, 0, 1000)])), /No crash data .*102/);
+  await assert.rejects(two(rows([row(101, 0, 1000), row(102, 0.02, 1000)])), /102 is 98\.00%/);
+  await assert.rejects(two(rows([row(101, 0, 1000), row(102, 0, 50)])), /50 user-days .*102/);
+  const ok = await two(rows([row(101, 0.001, 1000), row(102, 0.004, 1000)]));
+  assert.ok(Math.abs(ok.percent - 99.6) < 1e-9, 'reports the worst code');
+});
+
+test('a bad minimum user count is refused before it can pass thin data', async () => {
+  for (const bad of [NaN, 0, -5]) await assert.rejects(check(0, 10, { minUsers: bad }), /min-users must be/);
+});
+
+test('the release under check is the highest in-progress or halted one, whatever the order', () => {
   const tracks = [{ track: 'production', releases: [
+    { status: 'halted', versionCodes: ['101'] },
     { status: 'completed', versionCodes: ['100'] },
-    { status: 'halted', versionCodes: ['102', '101'] },
+    { status: 'inProgress', versionCodes: ['103', '102'] },
   ] }];
-  assert.deepEqual(releaseUnderCheck(tracks, 'production'), ['101', '102']);
+  assert.deepEqual(releaseUnderCheck(tracks, 'production'), ['102', '103']);
   assert.throws(() => releaseUnderCheck(tracks, 'beta'), /No in-progress or halted release on beta/);
 });

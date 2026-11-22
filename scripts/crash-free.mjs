@@ -20,9 +20,12 @@ import { listTracks } from './play.mjs';
 const API = 'https://playdeveloperreporting.googleapis.com/v1beta1';
 const ZONE = { id: 'America/Los_Angeles' }; // the only time zone DAILY data supports
 
-/** Version codes of the in-progress or halted release on `track`, sorted. */
+/** Version codes of the in-progress or halted release on `track` with the highest version code (the one `play.mjs` writes), sorted. */
 export function releaseUnderCheck(tracks, track) {
-  const rel = (tracks.find((t) => t.track === track)?.releases ?? []).find((r) => r.status === 'inProgress' || r.status === 'halted');
+  const top = (r) => Math.max(0, ...(r.versionCodes ?? []).map(Number));
+  const rel = (tracks.find((t) => t.track === track)?.releases ?? [])
+    .filter((r) => r.status === 'inProgress' || r.status === 'halted')
+    .sort((x, y) => top(y) - top(x))[0];
   if (!rel?.versionCodes?.length) throw new Error(`No in-progress or halted release on ${track} to check crash-free users for.`);
   return rel.versionCodes.map(String).sort();
 }
@@ -55,10 +58,7 @@ export async function crashFreeUsers({ pkg, token, versionCodes, days = 7, fetch
     const latest = set.freshnessInfo?.freshnesses?.find((f) => f.aggregationPeriod === 'DAILY')?.latestEndTime;
     if (!latest) throw new Error(`Play has published no daily crash data for ${pkg} yet.`);
     const end = { year: latest.year, month: latest.month, day: latest.day, timeZone: ZONE };
-    const wanted = new Set(versionCodes.map(String));
-    let users = 0;
-    let crashed = 0;
-    const seenDays = new Set();
+    const per = new Map(versionCodes.map((c) => [String(c), { users: 0, crashed: 0, days: new Set() }]));
     let pageToken;
     do {
       const page = await request({
@@ -75,38 +75,43 @@ export async function crashFreeUsers({ pkg, token, versionCodes, days = 7, fetch
         },
       });
       for (const row of page.rows ?? []) {
-        if (!wanted.has(versionCodeOf(row))) continue;
+        const acc = per.get(versionCodeOf(row));
+        if (!acc) continue;
         const rate = metric(row, 'crashRate');
         const n = metric(row, 'distinctUsers');
         if (!Number.isFinite(rate) || !Number.isFinite(n) || n <= 0) continue;
-        users += n;
-        crashed += rate * n;
-        const s = row.startTime ?? {};
-        seenDays.add(`${s.year}-${s.month}-${s.day}`);
+        acc.users += n;
+        acc.crashed += rate * n;
+        const st = row.startTime ?? {};
+        acc.days.add(`${st.year}-${st.month}-${st.day}`);
       }
       pageToken = page.nextPageToken;
     } while (pageToken);
-    return { percent: users > 0 ? 100 * (1 - crashed / users) : null, userDays: users, days: seenDays.size, end };
+    const byCode = [...per].map(([code, a]) => ({ code, userDays: a.users, days: a.days.size, percent: a.users > 0 ? 100 * (1 - a.crashed / a.users) : null }));
+    return { byCode, end };
   } catch (err) {
     throw explain(err);
   }
 }
 
-/** Resolves with the figures when `versionCodes` are at least `min`% crash-free on enough users; rejects otherwise. */
+/** Resolves with the figures when every version code is at least `min`% crash-free on enough users; rejects otherwise. */
 export async function checkCrashFree({ pkg, token, versionCodes, min, minUsers = 100, days = 7, fetchImpl }) {
-  const r = await crashFreeUsers({ pkg, token, versionCodes, days, fetchImpl });
-  const codes = versionCodes.join(', ');
-  if (r.percent === null) {
-    throw new Error(`No crash data from Play for version code ${codes} in the last ${days} days. Play publishes a day's data about a day later; try again tomorrow.`);
+  if (!(Number.isFinite(minUsers) && minUsers >= 1)) throw new Error(`min-users must be a number of at least 1 (got ${minUsers})`);
+  const { byCode, end } = await crashFreeUsers({ pkg, token, versionCodes, days, fetchImpl });
+  const shown = (p) => `${(Math.floor(p * 100 + 1e-9) / 100).toFixed(2)}%`;
+  for (const r of byCode) {
+    if (r.percent === null) {
+      throw new Error(`No crash data from Play for version code ${r.code} in the last ${days} days. Play publishes a day's data about a day later; try again tomorrow.`);
+    }
+    if (r.userDays < minUsers) {
+      throw new Error(`Only ${r.userDays} user-days of data for version code ${r.code} (crash-free ${shown(r.percent)}); the check needs at least ${minUsers}.`);
+    }
+    if (r.percent + 1e-9 < min) {
+      throw new Error(`Version code ${r.code} is ${shown(r.percent)} crash-free over ${r.userDays} user-days; widening needs at least ${min}%.`);
+    }
   }
-  const shown = `${(Math.floor(r.percent * 100 + 1e-9) / 100).toFixed(2)}%`;
-  if (r.userDays < minUsers) {
-    throw new Error(`Only ${r.userDays} user-days of data for version code ${codes} (crash-free ${shown}); the check needs at least ${minUsers}.`);
-  }
-  if (r.percent + 1e-9 < min) {
-    throw new Error(`Version code ${codes} is ${shown} crash-free over ${r.userDays} user-days; widening needs at least ${min}%.`);
-  }
-  return { ...r, shown };
+  const worst = byCode.reduce((a, b) => (b.percent < a.percent ? b : a));
+  return { ...worst, shown: shown(worst.percent), byCode, end };
 }
 
 async function cli() {
@@ -127,6 +132,7 @@ async function cli() {
     pkg, token: requireEnv('REPORTING_TOKEN'), versionCodes, min,
     minUsers: Number(values['min-users']), days: Number(values.days),
   });
+  setOutput('version_codes', versionCodes.join(','));
   const out = `CRASH_FREE_OK: ${pkg} [${versionCodes.join(', ')}] ${r.shown} crash-free users over ${r.userDays} user-days (${r.days} days of Play data to ${r.end.year}-${r.end.month}-${r.end.day}), minimum ${min}%`;
   log(out);
   setOutput('crash_free_users', r.percent.toFixed(4));

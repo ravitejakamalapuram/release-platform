@@ -648,7 +648,8 @@ Recorded for reference; nothing here needs to be repeated for new apps.
 **Google Cloud project `rk-release-platform` (number `335964689163`)**, billing not required.
 
 - APIs enabled: `iamcredentials`, `sts`, `iam`, `chromewebstore`, `androidpublisher`,
-  `playdeveloperreporting` (crash-free gate).
+  `playdeveloperreporting` (crash-free gate; enable it once with
+  `gcloud services enable playdeveloperreporting.googleapis.com --project=rk-release-platform`).
 - Workload Identity pool `github`, OIDC provider `github-oidc`
   (issuer `https://token.actions.githubusercontent.com`):
   - attribute mapping: `google.subject=assertion.sub`, `attribute.repository=assertion.repository`,

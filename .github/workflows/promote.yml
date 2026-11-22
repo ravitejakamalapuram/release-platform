@@ -187,6 +187,7 @@ jobs:
           create_credentials_file: false
 
       - name: Check crash-free users on Play
+        id: crashfree
         if: ${{ inputs.min_crash_free_users != '' }}
         env:
           PLAY_TOKEN: ${{ steps.auth.outputs.access_token }}
@@ -201,6 +202,17 @@ jobs:
             echo "::error::min_crash_free_users is only valid for rollout and complete (got '$ACTION')"; exit 1 ;;
           esac
           node platform/scripts/crash-free.mjs --package "$PACKAGE" --track "$TO" --min "$MIN" --min-users "$MIN_USER_DAYS"
+
+      # The release that was checked must still be the in-progress one right before the write. Narrows,
+      # but does not close, the window in which someone else changes the track (Play has no precondition).
+      - name: Confirm the checked release is still in progress
+        if: ${{ inputs.min_crash_free_users != '' }}
+        env:
+          GOOGLE_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          PACKAGE: ${{ needs.config.outputs.package }}
+          TO: ${{ inputs.to_track }}
+          CHECKED: ${{ steps.crashfree.outputs.version_codes }}
+        run: node platform/scripts/play.mjs confirm-in-progress --package "$PACKAGE" --track "$TO" --version-codes "$CHECKED"
 
       - name: ${{ inputs.action }}
         id: play
