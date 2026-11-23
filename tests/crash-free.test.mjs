@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fakeFetch, googleError } from './helpers.mjs';
-import { checkCrashFree, crashFreeUsers, releaseUnderCheck } from '../scripts/crash-free.mjs';
+import { checkCrashFree, crashFreeUsers, firstFullDay, releaseUnderCheck } from '../scripts/crash-free.mjs';
 
 const PKG = 'com.example.app';
 const freshness = { body: { freshnessInfo: { freshnesses: [
@@ -92,4 +92,31 @@ test('the release under check is the highest in-progress or halted one, whatever
   ] }];
   assert.deepEqual(releaseUnderCheck(tracks, 'production'), ['102', '103']);
   assert.throws(() => releaseUnderCheck(tracks, 'beta'), /No in-progress or halted release on beta/);
+});
+
+test('firstFullDay is the first Los Angeles day that starts at or after the given moment', () => {
+  const d = (y, m, day) => ({ year: y, month: m, day, timeZone: { id: 'America/Los_Angeles' } });
+  assert.deepEqual(firstFullDay('2026-11-20T20:00:00Z'), d(2026, 11, 21)); // 12:00 in LA: the rest of that day is partial
+  assert.deepEqual(firstFullDay('2026-11-20T08:00:00Z'), d(2026, 11, 20)); // exactly LA midnight
+  assert.deepEqual(firstFullDay('2026-11-20T03:00:00Z'), d(2026, 11, 20)); // 19:00 on Nov 19 in LA
+  assert.throws(() => firstFullDay('not a date'), /since must be/);
+});
+
+test('since moves the query start up to the first full day after it, but never earlier than the window', async () => {
+  const startOf = (since) => {
+    let start;
+    const f = fakeFetch([freshness, { ...rows([row(101, 0, 500)]), match: (_u, init) => { start = JSON.parse(init.body).timelineSpec.startTime; } }]);
+    return crashFreeUsers({ pkg: PKG, token: 't', versionCodes: ['101'], since, fetchImpl: f }).then(() => start);
+  };
+  assert.equal((await startOf('2026-11-19T20:00:00Z')).day, 20); // later than end(21) - 7 = 14
+  assert.equal((await startOf('2026-11-01T00:00:00Z')).day, 14); // older than the window: window wins
+});
+
+test('a soak that started after the last published day has no data yet and refuses without querying', async () => {
+  const f = fakeFetch([freshness]);
+  await assert.rejects(
+    checkCrashFree({ pkg: PKG, token: 't', versionCodes: ['101'], min: 99.5, minUsers: 100, since: '2026-11-22T20:00:00Z', fetchImpl: f }),
+    /No crash data .*101.*since 2026-11-22T20:00:00Z/s,
+  );
+  assert.equal(f.remaining(), 0);
 });
