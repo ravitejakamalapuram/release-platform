@@ -7,7 +7,8 @@
 // never treated as 100%: it refuses.
 //
 //   PLAY_TOKEN=... REPORTING_TOKEN=... node scripts/crash-free.mjs --package com.x --track production \
-//     --min 99.5 [--min-users 100] [--days 7]
+//     --min 99.5 [--min-users 100] [--days 7] [--since 2026-11-20T08:00:00Z]
+// --since: when the soak began; only full days from then on count (InvTrack #848: the soak window).
 // PLAY_TOKEN (androidpublisher scope) reads which release is in progress on the track; REPORTING_TOKEN
 // (playdeveloperreporting scope) reads its crash rate. Exit 1 when the release is below --min or the
 // data is missing or thin.
@@ -45,6 +46,21 @@ const shiftDays = ({ year, month, day }, delta) => {
   return { year: d.getUTCFullYear(), month: d.getUTCMonth() + 1, day: d.getUTCDate(), timeZone: ZONE };
 };
 
+/** The first Los Angeles day (Play's only daily time zone) that starts at or after `sinceIso`; days before it include time before `since`. */
+export function firstFullDay(sinceIso) {
+  // Z or an explicit offset is required: a bare date-time would be read in the host's time zone.
+  const at = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.test(sinceIso) ? new Date(sinceIso) : new Date(NaN);
+  if (Number.isNaN(at.getTime())) throw new Error(`since must be a date-time with Z or an offset, such as 2026-11-20T08:00:00Z (got ${sinceIso})`);
+  const p = Object.fromEntries(
+    new Intl.DateTimeFormat('en-US', { timeZone: ZONE.id, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' })
+      .formatToParts(at).filter((x) => x.type !== 'literal').map((x) => [x.type, Number(x.value)]),
+  );
+  const midnight = p.hour === 0 && p.minute === 0 && p.second === 0 && at.getUTCMilliseconds() === 0;
+  return shiftDays({ year: p.year, month: p.month, day: p.day }, midnight ? 0 : 1);
+}
+
+const dayNumber = ({ year, month, day }) => Date.UTC(year, month - 1, day);
+
 const metric = (row, name) => Number(row.metrics?.find((m) => m.metric === name)?.decimalValue?.value ?? NaN);
 const versionCodeOf = (row) => {
   const d = row.dimensions?.find((x) => x.dimension === 'versionCode');
@@ -52,22 +68,27 @@ const versionCodeOf = (row) => {
 };
 
 /** User-weighted crash-free users (%) for `versionCodes` over the last `days` days of published data. */
-export async function crashFreeUsers({ pkg, token, versionCodes, days = 7, fetchImpl = globalThis.fetch }) {
+export async function crashFreeUsers({ pkg, token, versionCodes, days = 7, since, fetchImpl = globalThis.fetch }) {
   try {
     const set = await request({ url: `${API}/apps/${pkg}/crashRateMetricSet`, token, fetchImpl });
     const latest = set.freshnessInfo?.freshnesses?.find((f) => f.aggregationPeriod === 'DAILY')?.latestEndTime;
     if (!latest) throw new Error(`Play has published no daily crash data for ${pkg} yet.`);
     const end = { year: latest.year, month: latest.month, day: latest.day, timeZone: ZONE };
-    const per = new Map(versionCodes.map((c) => [String(c), { users: 0, crashed: 0, days: new Set() }]));
+    // Data from before the soak began (for example testers on an earlier track) must not count.
+    const windowStart = shiftDays(end, -days);
+    const first = since ? firstFullDay(since) : null;
+    const start = first && dayNumber(first) > dayNumber(windowStart) ? first : windowStart;
+    const per = new Map(versionCodes.map((c) => [String(c), { users: 0, crashed: 0, maxRate: 0, days: new Set() }]));
     let pageToken;
-    do {
+    // No full day since the soak began has been published yet: nothing to read.
+    if (dayNumber(start) < dayNumber(end)) do {
       const page = await request({
         method: 'POST',
         url: `${API}/apps/${pkg}/crashRateMetricSet:query`,
         token,
         fetchImpl,
         json: {
-          timelineSpec: { aggregationPeriod: 'DAILY', startTime: shiftDays(end, -days), endTime: end },
+          timelineSpec: { aggregationPeriod: 'DAILY', startTime: start, endTime: end },
           dimensions: ['versionCode'],
           metrics: ['crashRate', 'distinctUsers'],
           pageSize: 1000,
@@ -82,12 +103,13 @@ export async function crashFreeUsers({ pkg, token, versionCodes, days = 7, fetch
         if (!Number.isFinite(rate) || !Number.isFinite(n) || n <= 0) continue;
         acc.users += n;
         acc.crashed += rate * n;
+        acc.maxRate = Math.max(acc.maxRate, rate);
         const st = row.startTime ?? {};
         acc.days.add(`${st.year}-${st.month}-${st.day}`);
       }
       pageToken = page.nextPageToken;
     } while (pageToken);
-    const byCode = [...per].map(([code, a]) => ({ code, userDays: a.users, days: a.days.size, percent: a.users > 0 ? 100 * (1 - a.crashed / a.users) : null }));
+    const byCode = [...per].map(([code, a]) => ({ code, userDays: a.users, days: a.days.size, maxRate: a.maxRate, percent: a.users > 0 ? 100 * (1 - a.crashed / a.users) : null }));
     return { byCode, end };
   } catch (err) {
     throw explain(err);
@@ -95,13 +117,13 @@ export async function crashFreeUsers({ pkg, token, versionCodes, days = 7, fetch
 }
 
 /** Resolves with the figures when every version code is at least `min`% crash-free on enough users; rejects otherwise. */
-export async function checkCrashFree({ pkg, token, versionCodes, min, minUsers = 100, days = 7, fetchImpl }) {
+export async function checkCrashFree({ pkg, token, versionCodes, min, minUsers = 100, days = 7, since, fetchImpl }) {
   if (!(Number.isFinite(minUsers) && minUsers >= 1)) throw new Error(`min-users must be a number of at least 1 (got ${minUsers})`);
-  const { byCode, end } = await crashFreeUsers({ pkg, token, versionCodes, days, fetchImpl });
+  const { byCode, end } = await crashFreeUsers({ pkg, token, versionCodes, days, since, fetchImpl });
   const shown = (p) => `${(Math.floor(p * 100 + 1e-9) / 100).toFixed(2)}%`;
   for (const r of byCode) {
     if (r.percent === null) {
-      throw new Error(`No crash data from Play for version code ${r.code} in the last ${days} days. Play publishes a day's data about a day later; try again tomorrow.`);
+      throw new Error(`No crash data from Play for version code ${r.code} in the last ${days} days${since ? ` since ${since}` : ''}. Play publishes a day's data about a day later; try again tomorrow.`);
     }
     if (r.userDays < minUsers) {
       throw new Error(`Only ${r.userDays} user-days of data for version code ${r.code} (crash-free ${shown(r.percent)}); the check needs at least ${minUsers}.`);
@@ -111,7 +133,8 @@ export async function checkCrashFree({ pkg, token, versionCodes, min, minUsers =
     }
   }
   const worst = byCode.reduce((a, b) => (b.percent < a.percent ? b : a));
-  return { ...worst, shown: shown(worst.percent), byCode, end };
+  // maxRate is the highest daily rate over every checked version code, not only the worst one's.
+  return { ...worst, maxRate: Math.max(...byCode.map((r) => r.maxRate)), shown: shown(worst.percent), byCode, end };
 }
 
 async function cli() {
@@ -122,6 +145,7 @@ async function cli() {
       min: { type: 'string' },
       'min-users': { type: 'string', default: '100' },
       days: { type: 'string', default: '7' },
+      since: { type: 'string' },
     },
   });
   const pkg = values.package;
@@ -130,10 +154,10 @@ async function cli() {
   const versionCodes = releaseUnderCheck(await listTracks({ pkg, token: requireEnv('PLAY_TOKEN') }), values.track);
   const r = await checkCrashFree({
     pkg, token: requireEnv('REPORTING_TOKEN'), versionCodes, min,
-    minUsers: Number(values['min-users']), days: Number(values.days),
+    minUsers: Number(values['min-users']), days: Number(values.days), since: values.since || undefined,
   });
   setOutput('version_codes', versionCodes.join(','));
-  const out = `CRASH_FREE_OK: ${pkg} [${versionCodes.join(', ')}] ${r.shown} crash-free users over ${r.userDays} user-days (${r.days} days of Play data to ${r.end.year}-${r.end.month}-${r.end.day}), minimum ${min}%`;
+  const out = `CRASH_FREE_OK: ${pkg} [${versionCodes.join(', ')}] ${r.shown} crash-free users over ${r.userDays} user-days (${r.days} days of Play data to ${r.end.year}-${r.end.month}-${r.end.day}), minimum ${min}%. Highest daily crashRate read: ${r.maxRate} (read as a fraction: 0.005 = 0.5% of users; if Play's figure is a percentage the gate refuses, never allows)`;
   log(out);
   setOutput('crash_free_users', r.percent.toFixed(4));
   summary(`### Crash-free users\n${out}`);

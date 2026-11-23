@@ -332,7 +332,7 @@ The package defaults to the first android target in `release.yaml`.
 job reads crash-free users for the in-progress (or halted) release from the Play Developer
 Reporting API before it changes anything ([`scripts/crash-free.mjs`](scripts/crash-free.mjs)). The
 figure is Android vitals' daily crash rate for those version codes over the last 7 days of data
-Play has published (about a day behind), weighted by each day's users. It refuses when there is
+Play has published (about a day behind), weighted by each day's users. With `crash_free_since` (when the soak began), only full days from then on count, so user-days from before the version reached the track cannot carry the gate. It refuses when there is
 no data or fewer than `min_crash_free_user_days` (default 100) user-days, and never treats
 missing data as crash-free. Vitals counts process crashes, so a Dart error that Crashlytics logs
 as fatal but that leaves the app running is not in it.
