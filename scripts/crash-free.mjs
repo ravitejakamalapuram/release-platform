@@ -48,8 +48,9 @@ const shiftDays = ({ year, month, day }, delta) => {
 
 /** The first Los Angeles day (Play's only daily time zone) that starts at or after `sinceIso`; days before it include time before `since`. */
 export function firstFullDay(sinceIso) {
-  const at = new Date(sinceIso);
-  if (Number.isNaN(at.getTime())) throw new Error(`since must be a date-time such as 2026-11-20T08:00:00Z (got ${sinceIso})`);
+  // Z or an explicit offset is required: a bare date-time would be read in the host's time zone.
+  const at = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.test(sinceIso) ? new Date(sinceIso) : new Date(NaN);
+  if (Number.isNaN(at.getTime())) throw new Error(`since must be a date-time with Z or an offset, such as 2026-11-20T08:00:00Z (got ${sinceIso})`);
   const p = Object.fromEntries(
     new Intl.DateTimeFormat('en-US', { timeZone: ZONE.id, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' })
       .formatToParts(at).filter((x) => x.type !== 'literal').map((x) => [x.type, Number(x.value)]),
@@ -80,7 +81,7 @@ export async function crashFreeUsers({ pkg, token, versionCodes, days = 7, since
     const per = new Map(versionCodes.map((c) => [String(c), { users: 0, crashed: 0, maxRate: 0, days: new Set() }]));
     let pageToken;
     // No full day since the soak began has been published yet: nothing to read.
-    if (dayNumber(start) <= dayNumber(end)) do {
+    if (dayNumber(start) < dayNumber(end)) do {
       const page = await request({
         method: 'POST',
         url: `${API}/apps/${pkg}/crashRateMetricSet:query`,
@@ -132,7 +133,8 @@ export async function checkCrashFree({ pkg, token, versionCodes, min, minUsers =
     }
   }
   const worst = byCode.reduce((a, b) => (b.percent < a.percent ? b : a));
-  return { ...worst, shown: shown(worst.percent), byCode, end };
+  // maxRate is the highest daily rate over every checked version code, not only the worst one's.
+  return { ...worst, maxRate: Math.max(...byCode.map((r) => r.maxRate)), shown: shown(worst.percent), byCode, end };
 }
 
 async function cli() {

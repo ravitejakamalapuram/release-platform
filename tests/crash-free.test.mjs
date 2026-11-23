@@ -120,3 +120,27 @@ test('a soak that started after the last published day has no data yet and refus
   );
   assert.equal(f.remaining(), 0);
 });
+
+test('a soak whose first full day is the exclusive end has no data yet and does not query', async () => {
+  const f = fakeFetch([freshness]);
+  await assert.rejects(
+    checkCrashFree({ pkg: PKG, token: 't', versionCodes: ['101'], min: 99.5, minUsers: 100, since: '2026-11-21T08:00:00Z', fetchImpl: f }),
+    /No crash data .*101.*since 2026-11-21T08:00:00Z/s,
+  );
+  assert.equal(f.remaining(), 0);
+});
+
+test('since needs Z or an explicit offset, so the window never depends on the host time zone', () => {
+  for (const bad of ['2026-11-20T08:00:00', '2026-11-20', 'Nov 20 2026 08:00']) {
+    assert.throws(() => firstFullDay(bad), /since must be/, bad);
+  }
+  assert.deepEqual(firstFullDay('2026-11-20T00:00:00-08:00'), firstFullDay('2026-11-20T08:00:00Z'));
+  assert.deepEqual(firstFullDay('2026-11-20T08:00:00.000+00:00'), firstFullDay('2026-11-20T08:00:00Z'));
+});
+
+test('the reported highest daily crashRate is the highest across every version code, not the worst one', async () => {
+  const f = fakeFetch([freshness, rows([row(101, 0.004, 500, 19), row(101, 0.004, 500, 20), row(102, 0, 5000, 19), row(102, 0.1, 100, 20)])]);
+  const r = await checkCrashFree({ pkg: PKG, token: 't', versionCodes: ['101', '102'], min: 99.5, minUsers: 100, fetchImpl: f });
+  assert.equal(r.code, '101'); // lowest crash-free (99.60% against 99.80%)
+  assert.equal(r.maxRate, 0.1); // but code 102 had the highest single-day rate
+});
