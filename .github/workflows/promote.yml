@@ -45,6 +45,10 @@ on:
         description: 'Fewest user-days of Play crash data that count for min_crash_free_users.'
         type: string
         default: '100'
+      allow_thin_crash_data:
+        description: 'With min_crash_free_users: let a release pass when Play has no or fewer than min_crash_free_user_days of crash data for it (a small rollout), as long as no data shows crashes below the minimum. The log says so. Default false: thin data refuses.'
+        type: boolean
+        default: false
       crash_free_since:
         description: 'When the soak began (ISO date-time). With min_crash_free_users, only full days of Play crash data from then on count. Default: the last 7 days.'
         type: string
@@ -202,11 +206,16 @@ jobs:
           MIN: ${{ inputs.min_crash_free_users }}
           MIN_USER_DAYS: ${{ inputs.min_crash_free_user_days }}
           SINCE: ${{ inputs.crash_free_since }}
+          ALLOW_THIN: ${{ inputs.allow_thin_crash_data }}
         run: |
           case "$ACTION" in rollout|complete) ;; *)
             echo "::error::min_crash_free_users is only valid for rollout and complete (got '$ACTION')"; exit 1 ;;
           esac
-          node platform/scripts/crash-free.mjs --package "$PACKAGE" --track "$TO" --min "$MIN" --min-users "$MIN_USER_DAYS" ${SINCE:+--since "$SINCE"}
+          args=(--package "$PACKAGE" --track "$TO" --min "$MIN" --min-users "$MIN_USER_DAYS")
+          [ -n "$SINCE" ] && args+=(--since "$SINCE")
+          [ "$ALLOW_THIN" = true ] && args+=(--allow-thin-data)
+          node platform/scripts/crash-free.mjs "${args[@]}"
+
 
       # The release that was checked must still be the in-progress one right before the write. Narrows,
       # but does not close, the window in which someone else changes the track (Play has no precondition).

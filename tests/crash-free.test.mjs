@@ -144,3 +144,15 @@ test('the reported highest daily crashRate is the highest across every version c
   assert.equal(r.code, '101'); // lowest crash-free (99.60% against 99.80%)
   assert.equal(r.maxRate, 0.1); // but code 102 had the highest single-day rate
 });
+
+test('allowThin lets a version code with no rows or too few user-days pass, flagged', async () => {
+  const none = await check(null, 100, { allowThin: true });
+  assert.deepEqual(none.thin, ['101']);
+  assert.equal(none.percent, null);
+  const few = await check(0, 90, { allowThin: true });
+  assert.deepEqual(few.thin, ['101']);
+});
+
+test('allowThin still refuses thin data that shows crashes below the minimum', async () => {
+  await assert.rejects(check(0.02, 50, { allowThin: true }), /98\.00% crash-free over 50 user-days/);
+});
