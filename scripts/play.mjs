@@ -220,7 +220,8 @@ export async function changeRollout({ pkg, token, fetchImpl, track, action, frac
       updated = { ...rel, status: 'inProgress', userFraction: fraction };
     } else throw new Error(`Unknown rollout action "${action}"`);
 
-    const others = (current.releases ?? []).filter((r) => r !== rel);
+    // Play allows one completed release per track: completing this one replaces the previous completed release.
+    const others = (current.releases ?? []).filter((r) => r !== rel && !(updated.status === 'completed' && r.status === 'completed'));
     await request({ method: 'PUT', url: urls.track(pkg, id, track), token, json: { track, releases: [...others, updated] }, fetchImpl });
     return { name: updated.name, versionCodes: updated.versionCodes, track, status: updated.status, userFraction: updated.userFraction };
   });

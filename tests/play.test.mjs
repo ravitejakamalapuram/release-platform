@@ -130,8 +130,9 @@ test('halt / rollout / complete change only the in-progress release', async () =
   assert.deepEqual(halted[0], production.releases[0]);
   assert.deepEqual(halted[1], { name: '1.3.0', versionCodes: ['1003000'], status: 'halted', userFraction: 0.2 });
   assert.equal((await run('rollout', 0.5))[1].userFraction, 0.5);
-  assert.deepEqual((await run('complete'))[1], { name: '1.3.0', versionCodes: ['1003000'], status: 'completed' });
-  assert.equal((await run('rollout', 1))[1].status, 'completed');
+  // Play rejects two completed releases on a track (400 "Only one completed release is allowed"), so the old one is dropped.
+  assert.deepEqual(await run('complete'), [{ name: '1.3.0', versionCodes: ['1003000'], status: 'completed' }]);
+  assert.deepEqual(await run('rollout', 1), [{ name: '1.3.0', versionCodes: ['1003000'], status: 'completed' }]);
   await assert.rejects(run('rollout', 0.1), /must be higher than the current 0.2/);
 });
 
