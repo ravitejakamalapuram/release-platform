@@ -334,7 +334,7 @@ Reporting API before it changes anything ([`scripts/crash-free.mjs`](scripts/cra
 figure is Android vitals' daily crash rate for those version codes over the last 7 days of data
 Play has published (about a day behind), weighted by each day's users. With `crash_free_since` (when the soak began), only full days from then on count, so user-days from before the version reached the track cannot carry the gate. It refuses when there is
 no data or fewer than `min_crash_free_user_days` (default 100) user-days, and never treats
-missing data as crash-free. Vitals counts process crashes, so a Dart error that Crashlytics logs
+missing data as crash-free, unless the caller sets `allow_thin_crash_data: true`: then a release with no or too few user-days passes (the log says `CRASH_FREE_THIN_DATA`) if no data shows crashes below the minimum. Use it only for small rollouts where Play withholds the figure. Vitals counts process crashes, so a Dart error that Crashlytics logs
 as fatal but that leaves the app running is not in it.
 Right before the write, the job re-reads the track and refuses if the checked release is no longer the one it would change. Play's edits API has no precondition, so a change made in Play Console in the last few seconds can still slip through; promotions through this workflow are serialized by its concurrency group.
 

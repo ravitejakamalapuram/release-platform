@@ -117,11 +117,20 @@ export async function crashFreeUsers({ pkg, token, versionCodes, days = 7, since
 }
 
 /** Resolves with the figures when every version code is at least `min`% crash-free on enough users; rejects otherwise. */
-export async function checkCrashFree({ pkg, token, versionCodes, min, minUsers = 100, days = 7, since, fetchImpl }) {
+export async function checkCrashFree({ pkg, token, versionCodes, min, minUsers = 100, days = 7, since, allowThin = false, fetchImpl }) {
   if (!(Number.isFinite(minUsers) && minUsers >= 1)) throw new Error(`min-users must be a number of at least 1 (got ${minUsers})`);
   const { byCode, end } = await crashFreeUsers({ pkg, token, versionCodes, days, since, fetchImpl });
   const shown = (p) => `${(Math.floor(p * 100 + 1e-9) / 100).toFixed(2)}%`;
+  // With allowThin, a version code Play has no or too few user-days for passes (flagged), but only if its crashes, when there are any, are within the minimum.
+  const thin = [];
   for (const r of byCode) {
+    if (allowThin && (r.percent === null || r.userDays < minUsers)) {
+      if (r.percent !== null && r.percent + 1e-9 < min) {
+        throw new Error(`Version code ${r.code} is ${shown(r.percent)} crash-free over ${r.userDays} user-days; widening needs at least ${min}%.`);
+      }
+      thin.push(r.code);
+      continue;
+    }
     if (r.percent === null) {
       throw new Error(`No crash data from Play for version code ${r.code} in the last ${days} days${since ? ` since ${since}` : ''}. Play publishes a day's data about a day later; try again tomorrow.`);
     }
@@ -132,9 +141,13 @@ export async function checkCrashFree({ pkg, token, versionCodes, min, minUsers =
       throw new Error(`Version code ${r.code} is ${shown(r.percent)} crash-free over ${r.userDays} user-days; widening needs at least ${min}%.`);
     }
   }
-  const worst = byCode.reduce((a, b) => (b.percent < a.percent ? b : a));
+  if (thin.length === byCode.length) {
+    return { code: thin.join(','), userDays: Math.max(...byCode.map((r) => r.userDays)), days: 0, percent: null, maxRate: 0, shown: 'n/a', byCode, end, thin };
+  }
+  const known = byCode.filter((r) => r.percent !== null);
+  const worst = known.reduce((a, b) => (b.percent < a.percent ? b : a));
   // maxRate is the highest daily rate over every checked version code, not only the worst one's.
-  return { ...worst, maxRate: Math.max(...byCode.map((r) => r.maxRate)), shown: shown(worst.percent), byCode, end };
+  return { ...worst, maxRate: Math.max(...byCode.map((r) => r.maxRate)), shown: shown(worst.percent), byCode, end, thin };
 }
 
 async function cli() {
@@ -146,6 +159,7 @@ async function cli() {
       'min-users': { type: 'string', default: '100' },
       days: { type: 'string', default: '7' },
       since: { type: 'string' },
+      'allow-thin-data': { type: 'boolean', default: false },
     },
   });
   const pkg = values.package;
@@ -155,8 +169,15 @@ async function cli() {
   const r = await checkCrashFree({
     pkg, token: requireEnv('REPORTING_TOKEN'), versionCodes, min,
     minUsers: Number(values['min-users']), days: Number(values.days), since: values.since || undefined,
+    allowThin: values['allow-thin-data'],
   });
   setOutput('version_codes', versionCodes.join(','));
+  if (r.thin.length) {
+    const outThin = `CRASH_FREE_THIN_DATA: ${pkg} [${r.thin.join(', ')}] Play has too little crash data (fewer than ${values['min-users']} user-days) to publish a rate; none shows crashes below ${min}%. Passed only because allow-thin-data is on.`;
+    log(outThin);
+    summary(`### Crash-free users\n${outThin}`);
+    if (r.percent === null) return;
+  }
   const out = `CRASH_FREE_OK: ${pkg} [${versionCodes.join(', ')}] ${r.shown} crash-free users over ${r.userDays} user-days (${r.days} days of Play data to ${r.end.year}-${r.end.month}-${r.end.day}), minimum ${min}%. Highest daily crashRate read: ${r.maxRate} (read as a fraction: 0.005 = 0.5% of users; if Play's figure is a percentage the gate refuses, never allows)`;
   log(out);
   setOutput('crash_free_users', r.percent.toFixed(4));
